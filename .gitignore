@@ -1,1 +1,9 @@
 CytoNormPy/
+data_batch_correction.R_error.log
+data_batch_correction.R_output.log
+data_correction_performance.R
+data_correction_performance.R_error.log
+data_correction_performance.R_output.log
+data_prep.R
+data_prep.R_error.log
+data_prep.R_output.log
