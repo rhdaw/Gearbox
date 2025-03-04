@@ -8,3 +8,6 @@ data_prep.R
 data_prep.R_error.log
 data_prep.R_output.log
 bad_marker_entries.csv
+
+cycombine/
+.RData
