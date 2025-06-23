@@ -162,8 +162,8 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
                 data.append({
                     'Gate': node.name,
                     'Parent_Gate': path[sid-1].name if sid>0 else 'None',
-                    'X_Axis': node.x_axis,
-                    'Y_Axis': node.y_axis,
+                    'X_axis': node.x_axis,
+                    'Y_axis': node.y_axis,
                     'Is_Terminal': sid==len(path)-1,
                     'Path_ID': pid,
                     'Path_Name': pname,
@@ -193,14 +193,14 @@ def clean_gating_strategy(panel_metadata_path, gating_strat_df = None):
     panel_metadata = pd.read_csv(panel_metadata_path)
     gating_strat_df = gating_strat_df.copy()
 
-    for col in ['X_Axis', 'Y_Axis']:
+    for col in ['X_axis', 'Y_axis']:
         gating_strat_df[col] = gating_strat_df[col].astype(str).str.extract(r'id:\s*([^)]*)', expand=False).str.strip()
                                 
     channel_to_antigen = panel_metadata.set_index('Channel')['Antigen'].to_dict()
     print(gating_strat_df)
 
-    gating_strat_df['X_Axis'] = gating_strat_df['X_Axis'].map(channel_to_antigen).fillna(gating_strat_df['X_Axis'])
-    gating_strat_df['Y_Axis'] = gating_strat_df['Y_Axis'].map(channel_to_antigen).fillna(gating_strat_df['Y_Axis'])
+    gating_strat_df['X_axis'] = gating_strat_df['X_axis'].map(channel_to_antigen).fillna(gating_strat_df['X_axis'])
+    gating_strat_df['Y_axis'] = gating_strat_df['Y_axis'].map(channel_to_antigen).fillna(gating_strat_df['Y_axis'])
 
     return gating_strat_df
     
