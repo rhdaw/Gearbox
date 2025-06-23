@@ -10,4 +10,5 @@ data_prep.R_output.log
 bad_marker_entries.csv
 
 cycombine/
-.RDataUNITO/
+.RData
+UNITO/
