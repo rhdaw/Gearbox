@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "albumentations>=2.0.8",
+    "dataset>=1.6.2",
     "flowkit>=1.2.3",
     "torchvision>=0.22.0",
 ]
