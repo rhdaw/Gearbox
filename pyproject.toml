@@ -8,6 +8,7 @@ dependencies = [
     "albumentations>=2.0.8",
     "dataset>=1.6.2",
     "fcsparser>=0.2.8",
+    "fcswrite>=0.6.2",
     "flowkit>=1.2.3",
     "pandas>=2.2.3",
     "torchvision>=0.22.0",

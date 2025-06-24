@@ -5,6 +5,41 @@ import os
 from lxml import etree as ET
 import re
 
+def _extract_gate_names_from_tuple(gate_tuple):
+    """Extract all gate names from the tuple structure"""
+    terminal_gate = gate_tuple[0]  
+    gate_path = gate_tuple[1]     
+    all_gates = list(gate_path) + [terminal_gate]
+    all_gates.remove('root') 
+    return all_gates
+
+def _adjust_filename_and_save(sample_id, csv_dir, gate_df, gate_data):
+    """ Adjusts to a .csv file and saves the file to the csv_dir """
+    sample_id_nofcs = sample_id.replace('.fcs','')
+    csv_path = os.path.join(csv_dir, f"{sample_id_nofcs}.csv")
+    if not os.path.exists(csv_path):
+        print(f"CSV for {sample_id} not found, skipping.")
+        return  
+    
+    csv_df = pd.read_csv(csv_path)
+
+    # Error handling on checking cell # across the gate dataframe and the fcs file (now called csv)
+    if len(csv_df) != len(gate_df):
+        print(f"ERROR: Cell count mismatch for {sample_id}")
+        print(f"  Original CSV: {len(csv_df)} cells")
+        print(f"  Gate data: {len(gate_df)} cells") 
+        print("  Skipping this sample - data integrity issue")
+        return  
+        
+    # Add the gate columns to CSV
+    for gate_name in gate_data.keys():
+        csv_df[gate_name] = gate_df[gate_name].values
+
+    # Save 
+    output_path = os.path.join(csv_dir, f"{sample_id_nofcs}_with_gate_label.csv")
+    csv_df.to_csv(output_path, index=False)
+    print(f"Saved labeled CSV for {sample_id_nofcs}")
+
 def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
     """ Uses the converted and processed .csv files and the .fcs files that they origin from. 
     Takes the Gate_Label from the .fcs file and applies it to the .csv """
@@ -28,43 +63,37 @@ def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
             
             # Get the number of events in the sample - each event needs a gate label
             num_events = len(sample.get_events(source= 'raw'))
-            
-            # Initialize gate labels with "Ungated"
-            gate_labels = ["Ungated"] * num_events
 
+            # Collect all unique gate names
+            all_unique_gates = set()
+            for gate_id in terminal_gates:
+                try:
+                    gate_names = _extract_gate_names_from_tuple(gate_id)
+                    all_unique_gates.update(gate_names)
+                except:
+                    pass
+    
+            gate_data = {gate: [0] * num_events for gate in all_unique_gates} # Sets everything to 0 intially.
+            
             for gate_id in terminal_gates:
                 try:
                     membership = workspace.get_gate_membership(sample_id, gate_id[0], gate_path= gate_id[1])
                     # Update labels for cells in this terminal gate
                     for i, is_member in enumerate(membership):
                         if is_member:
-                            gate_labels[i] = gate_id
+                            gate_names = _extract_gate_names_from_tuple(gate_id)
+                            for gate_name in gate_names:
+                                if gate_name in gate_data:
+                                    gate_data[gate_name][i] = 1
                 except Exception as e:
                     print(f"Error getting membership for terminal gate {gate_id}: {e}")
-
-            gate_df = pd.DataFrame({'Gate_Label': gate_labels})
-
-            sample_id_nofcs = sample_id.replace('.fcs','')
-            csv_path = os.path.join(csv_dir, f"{sample_id_nofcs}.csv")
-            if not os.path.exists(csv_path):
-                print(f"CSV for {sample_id} not found, skipping.")
-                continue
-
-            csv_df = pd.read_csv(csv_path)
-
-            if len(csv_df) != len(gate_df):
-                print(f"Mismatch in cell count for {sample_id}: CSV has {len(csv_df)}, FCS has {len(gate_df)}")
-                continue
-
-            # Add the Gate_Label to your CSV
-            csv_df["Gate_Label"] = gate_df["Gate_Label"].values
-
-            # Save output
-
-            output_path = os.path.join(csv_dir, f"{sample_id_nofcs}_with_gate_label.csv")
-            csv_df.to_csv(output_path, index=False)
-            print(f"Saved labeled CSV for {sample_id_nofcs}")
-
+            
+            # Create DataFrame with separate gate columns (UNITO format)
+            gate_df = pd.DataFrame(gate_data)
+            print('Gating data to be appended to gated flow files:')
+            print(gate_df)
+            _adjust_filename_and_save(sample_id, csv_dir, gate_df, gate_data)
+    
         except Exception as e:
             print(f"Error processing {sample_id}: {e}")
     print('.csv processing complete')
@@ -203,4 +232,6 @@ def clean_gating_strategy(panel_metadata_path, gating_strat_df = None):
     gating_strat_df['Y_axis'] = gating_strat_df['Y_axis'].map(channel_to_antigen).fillna(gating_strat_df['Y_axis'])
 
     return gating_strat_df
+
+
     

@@ -7,16 +7,17 @@ import random
 import shutil
 import sys
 import fcsparser
-
 import os
+
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
 from UNITO_Train_Predict.hyperparameter_tunning import tune
 from UNITO_Train_Predict.Train import train
 from UNITO_Train_Predict.Validation_Recon_Plot_Single import plot_all
 from UNITO_Train_Predict.Data_Preprocessing import process_table, train_test_val_split
 from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
+
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy
-warnings.filterwarnings("ignore")
+from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
 # For reproducibility
 import torch
@@ -137,6 +138,7 @@ def main():
     path2_lastgate_pred_list[0] = pred_path
 
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
+    all_gate_definitions = {}
 
     for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
         print(f"start UNITO for {gate}")
@@ -167,7 +169,16 @@ def main():
         plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
         print("All UNITO prediction visualization saved")
 
-    print("Sequential autogating prediction finished")
+# 8. Create hierarchical gates from all predictions
+    print("Creating hierarchical gates...")
+    
+    save_fcs_with_gates_path = f'{dest}/fcs_with_hierarchical_unito_gates'
+    if not os.path.exists(save_fcs_with_gates_path):
+        os.makedirs(save_fcs_with_gates_path)
+         
+    create_hierarchical_gates_from_unito(final_gating_strategy, save_prediction_path, save_fcs_with_gates_path, fcs_dir)
+    
+    print("Sequential autogating with hierarchical gates finished")
     hyperparameter_df.to_csv('./hyperparameter_tunning.csv')
 
 if __name__ == '__main__':
