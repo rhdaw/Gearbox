@@ -1,4 +1,7 @@
 import os
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # Add this at the very top
+os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
+
 import pandas as pd
 import warnings
 from pathlib import Path
@@ -7,9 +10,7 @@ import random
 import shutil
 import sys
 import fcsparser
-import os
 
-os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
 from UNITO_Train_Predict.hyperparameter_tunning import tune
 from UNITO_Train_Predict.Train import train
 from UNITO_Train_Predict.Validation_Recon_Plot_Single import plot_all
@@ -18,6 +19,7 @@ from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
+
 
 # For reproducibility
 import torch
@@ -77,10 +79,10 @@ def generate_gating_strategy():
 def main():
     """Main pipeline execution"""
     # Step 1: Convert FCS to CSV
-    convert_all_fcs()
+    #convert_all_fcs()
     
     # Step 2: Parse gates and add to CSV files
-    parse_gates()
+    #parse_gates()
     
     # Step 3: Generate gating strategy
     final_gating_strategy = generate_gating_strategy()
@@ -95,8 +97,8 @@ def main():
     y_axis_list = list(gating.Y_axis)
     path2_lastgate_pred_list = ['./prediction/' for x in range(len(gate_list))]
 
-    device = 'mps' if torch.backends.mps.is_available() else 'cpu' # Use Apple GPU
-    n_worker = 0
+    device = 'mps'
+    n_worker = 16
     epoches = 1000
 
     hyperparameter_set = [
@@ -133,12 +135,11 @@ def main():
         if os.path.exists(source_path):  # Check if file exists before moving
             shutil.move(source_path, destination_path)
 
-    # Continue with rest of pipeline...
     pred_path = csv_conversion_dir
     path2_lastgate_pred_list[0] = pred_path
 
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
-    all_gate_definitions = {}
+
 
     for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
         print(f"start UNITO for {gate}")
