@@ -1,9 +1,20 @@
+
 import os
+import ssl
+import urllib3
+import warnings
+import pandas as pd
+
+# Removal of unnessecary error msgs caused by shit UNITO code.
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # Add this at the very top
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
+warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning) 
 
-import pandas as pd
-import warnings
 from pathlib import Path
 import concurrent.futures
 import random
@@ -33,8 +44,8 @@ np.random.seed(0)
 fcs_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/altered_fcs_files/post_flowai/'
 csv_conversion_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/processing_outputs/autogating_reports_and_data/autogating_csv_conversions/'
 fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
-wsp_path = '/Users/user/Documents/test_wsp/WSP_22052025.wsp' # <- Set the path to the WSP
-wsp_files_path = '/Users/user/Documents/test_wsp/'
+wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp' # <- Set the path to the WSP
+wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/'
 
 # UNITO requires .csv so convert files
 def _convert_fcs_to_csv(fcs_file, csv_conversion_dir):
@@ -109,7 +120,7 @@ def main():
                           ]
 
     #4. Define paths and build dirs
-    dest = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/processing_outputs/autogating_reports_and_data/'
+    dest = '/Users/user/Documents/UNITO_train_data'
     save_data_img_path = f'{dest}/Data'
     save_figure_path = f'{dest}/figures'
     save_model_path = f'{dest}/model'
@@ -127,6 +138,7 @@ def main():
     #5a. Get only CSV files with gate labels
     training_csv_files = [f for f in os.listdir(csv_conversion_dir) if f.endswith('_with_gate_label.csv')]
     print(f"Found {len(training_csv_files)} files with gate labels")
+    print("If 0 files found - likely already moved to gated csv files to correct dir")
 
     #5b. Move the .csv files with gates to the train folder
     for training_csv_file in training_csv_files:
