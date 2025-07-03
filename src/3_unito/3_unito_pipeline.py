@@ -28,7 +28,7 @@ from UNITO_Train_Predict.Validation_Recon_Plot_Single import plot_all
 from UNITO_Train_Predict.Data_Preprocessing import process_table, train_test_val_split
 from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 
-from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy
+from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
 
@@ -87,6 +87,7 @@ def generate_gating_strategy():
     print("Gating strategy saved!")
     return final_gating_strategy
 
+
 def main():
     """Main pipeline execution"""
     # Step 1: Convert FCS to CSV
@@ -94,11 +95,11 @@ def main():
     
     # Step 2: Parse gates and add to CSV files
     #parse_gates()
-    
-    # Step 3: Generate gating strategy
+
+    # Step 4: Generate gating strategy
     final_gating_strategy = generate_gating_strategy()
     
-    # Step 4: Continue with rest of pipeline
+    # Step 5: Continue with rest of pipeline
     gating = final_gating_strategy
     
     gate_pre_list = list(gating.Parent_Gate)
@@ -110,16 +111,14 @@ def main():
 
     device = 'mps'
     n_worker = 16
-    epoches = 1000
+    epoches = 100
 
     hyperparameter_set = [
-                          [1e-3, 8],
-                          [1e-4, 8],
                           [1e-3, 16],
                           [1e-4, 16]
                           ]
 
-    #4. Define paths and build dirs
+    # Step 6. Define paths and build dirs
     dest = '/Users/user/Documents/UNITO_train_data'
     save_data_img_path = f'{dest}/Data'
     save_figure_path = f'{dest}/figures'
@@ -130,59 +129,62 @@ def main():
         if not os.path.exists(path):
             os.makedirs(path)
 
-    # #5. 'Train' dir Generation and Management
+    # Step 7. 'Train' dir Generation and Management
     train_path = Path(csv_conversion_dir, 'train')
     if not os.path.exists(train_path):
         os.mkdir(train_path)
 
-    #5a. Get only CSV files with gate labels
+    # Step 7a. Get only CSV files with gate labels
     training_csv_files = [f for f in os.listdir(csv_conversion_dir) if f.endswith('_with_gate_label.csv')]
     print(f"Found {len(training_csv_files)} files with gate labels")
     print("If 0 files found - likely already moved to gated csv files to correct dir")
 
-    #5b. Move the .csv files with gates to the train folder
+    # Step 8. Move the .csv files with gates to the train folder
     for training_csv_file in training_csv_files:
         source_path = os.path.join(csv_conversion_dir, training_csv_file)
         destination_path = os.path.join(train_path, training_csv_file)
         if os.path.exists(source_path):  # Check if file exists before moving
             shutil.move(source_path, destination_path)
 
+    # Step 8a. Add Gate Labels to the .csv files in the train folder
+    #add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
+
+    # Step 9. UNITO
     pred_path = csv_conversion_dir
     path2_lastgate_pred_list[0] = pred_path
 
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
 
-
     for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
         print(f"start UNITO for {gate}")
 
-        # 7a. preprocess training data
-        process_table(x_axis, y_axis, gate_pre, gate, str(train_path), convex = None, seq = (gate_pre!=None), dest = dest)
+        # 9a. preprocess training data
+        process_table(x_axis, y_axis, gate_pre, gate, str(train_path), convex = True, seq = (gate_pre!=None), dest = dest)
         train_test_val_split(gate, str(train_path), dest, "train")
 
-        # 7b. train
+        # 9b. train
         best_lr, best_bs = tune(gate, hyperparameter_set, device, epoches, n_worker, dest)
         hyperparameter_df.loc[len(hyperparameter_df)] = [gate, best_lr, best_bs]
         train(gate, best_lr, device, best_bs, epoches, n_worker, dest)
 
-        # 7c. preprocess prediction data
+        # 9c. preprocess prediction data
         print(f"Start prediction for {gate}")
-        process_table(x_axis, y_axis, gate_pre, gate, pred_path, seq = (gate_pre!=None), dest = dest)
+        process_table(x_axis, y_axis, gate_pre, gate, pred_path, convex = True, seq = (gate_pre!=None), dest = dest)
         train_test_val_split(gate, pred_path, dest, 'pred')
 
-        # 7d. predict
+        # 9d. predict
         model_path = f'{dest}/model/{gate}_model.pt'
         data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, path_raw, n_worker, device, save_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
 
-        # 7e. Evaluation
+        # 9e. Evaluation
         accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
         print(f"{gate}: accuracy:{accuracy}, recall:{recall}, precision:{precision}, f1 score:{f1}")
 
-        # 7f. Plot gating results
+        # 9f. Plot gating results
         plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
         print("All UNITO prediction visualization saved")
 
-# 8. Create hierarchical gates from all predictions
+# Step 10. Create hierarchical gates from all predictions
     print("Creating hierarchical gates...")
     
     save_fcs_with_gates_path = f'{dest}/fcs_with_hierarchical_unito_gates'

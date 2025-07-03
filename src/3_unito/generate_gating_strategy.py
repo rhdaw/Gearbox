@@ -4,6 +4,7 @@ import pandas as pd
 import os
 from lxml import etree as ET
 import re
+import concurrent.futures
 
 def _extract_gate_names_from_tuple(gate_tuple):
     """Extract all gate names from the tuple structure"""
@@ -233,5 +234,30 @@ def clean_gating_strategy(panel_metadata_path, gating_strat_df = None):
 
     return gating_strat_df
 
+def _add_gate_cols(f, all_train_cols, test_dir):
+    test_df = pd.read_csv(os.path.join(test_dir, f))
+    cols_to_add = {col: 0 for col in all_train_cols if col not in test_df.columns}
 
-    
+    if cols_to_add:
+        test_df = test_df.assign(**cols_to_add)
+        test_df.to_csv(os.path.join(test_dir, f), index=False)
+        print(f'Added {len(cols_to_add)} gate columns to {f}')
+    else:
+        print(f'No new columns to add to {f} - already has gate labels')
+
+def add_gate_labels_to_test_files(test_dir, train_dir):
+    """ Takes Gate lables from train .csv and applies to all test .csv files """
+    train_csv_files = [f for f in os.listdir(train_dir) if f.endswith('_with_gate_label.csv')]
+    test_csv_files = [f for f in os.listdir(test_dir) if f.endswith('.csv') and not f.endswith('_with_gate_label.csv')]
+    train_df = pd.read_csv(os.path.join(train_dir, train_csv_files[0]))
+    all_train_cols = list(train_df.columns)
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
+        results = [executor.submit(_add_gate_cols, f, all_train_cols, test_dir) for f in test_csv_files]
+        for future in concurrent.futures.as_completed(results):
+            try:
+                future.result()  # Raise any exceptions that occurred
+            except Exception as e:
+                print(f"Error processing file: {e}")
+
+
