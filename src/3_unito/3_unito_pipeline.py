@@ -19,10 +19,10 @@ from pathlib import Path
 import concurrent.futures
 import random
 import shutil
-import sys
 import fcsparser
 import torch
 import subprocess
+import numpy as np
 
 # UNITO Imports
 from UNITO_Train_Predict.hyperparameter_tunning import tune
@@ -35,10 +35,9 @@ from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
-
-# RAM DISK mount for quicker train ───────────────────────────────────────────────
+# RAM DISK mount and functions for quicker train ───────────────────────────────────────────────
 ram_disk = True
-if ram_disk:
+if ram_disk == True:
     RAM_BLOCKS = 536_870_912    # 256 GiB
     DEV = subprocess.check_output([
         "hdiutil","attach","-nomount", f"ram://{RAM_BLOCKS}"
@@ -47,14 +46,39 @@ if ram_disk:
         "diskutil","eraseVolume","HFS+","RAMDisk",DEV
     ], stdout=subprocess.DEVNULL)
     os.environ.setdefault("UNITO_DEST", "/Volumes/RAMDisk/UNITO_train_data")
+
+def flush_ramdisk_to_disk(disk_dest):
+    """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest. Empties RAM DISK on completion for next gate."""
+    # Copy to disk directories
+    ram_dest = os.getenv("UNITO_DEST")
+    subdirs = ["Data", "figures", "model", "prediction"]
+    for sub in subdirs:
+        src = os.path.join(ram_dest, sub)
+        dst = os.path.join(disk_dest, sub)
+        if os.path.exists(src):
+            os.makedirs(dst, exist_ok=True)
+            # copy all files & dirs over, overwriting existing
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    # Copy summary .csv if possible
+    for fn in ["gating_strategy.csv", "hyperparameter_tunning.csv"]:
+        if os.path.exists(fn):
+            shutil.copy(fn, os.path.join(disk_dest, fn))
+
+    # Clear RAM for next gate
+    for sub in subdirs:
+        ram_sub = os.path.join(ram_dest, sub)
+        if os.path.exists(ram_sub):
+            shutil.rmtree(ram_sub)
+            os.makedirs(ram_sub, exist_ok=True)
+
+    print(f"Flushed RAMDisk contents from {ram_dest} to {disk_dest}")
 # ────────────────────────────────────────────────────────────────────────────────
 
 # Torch settings - for reproducibility
 train = torch.compile(train)
 torch.manual_seed(0)
-import random
 random.seed(0)
-import numpy as np
 np.random.seed(0)
 
 # Setting Directories
@@ -63,6 +87,7 @@ csv_conversion_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computat
 fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
 wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp' # <- Set the path to the WSP
 wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/'
+disk_dest = '/Users/user/Documents/UNITO_train_data'
 
 # UNITO requires .csv so convert files
 def _convert_fcs_to_csv(fcs_file, csv_conversion_dir):
@@ -182,8 +207,7 @@ def main():
     #add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
 
     # Step 9. UNITO
-    pred_path = csv_conversion_dir
-    path2_lastgate_pred_list[0] = pred_path
+    path2_lastgate_pred_list[0] = csv_conversion_dir
     
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
 
@@ -203,8 +227,8 @@ def main():
 
         # 9c. preprocess prediction data
         print(f"Start prediction for {gate}")
-        process_table(x_axis, y_axis, gate_pre, gate, pred_path, convex = True, seq = (gate_pre!=None), dest = dest)
-        train_test_val_split(gate, pred_path, dest, 'pred')
+        process_table(x_axis, y_axis, gate_pre, gate, csv_conversion_dir, convex = True, seq = (gate_pre!=None), dest = dest)
+        train_test_val_split(gate, csv_conversion_dir, dest, 'pred')
 
         # 9d. predict
         model_path = f'{dest}/model/{gate}_model.pt'
@@ -218,9 +242,11 @@ def main():
         plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
         print("All UNITO prediction visualization saved")
 
+        # Flush RAM DISK for next gate.
+        flush_ramdisk_to_disk(disk_dest)
+
 # Step 10. Create hierarchical gates from all predictions
     print("Creating hierarchical gates...")
-    disk_dest = '/Users/user/Documents/UNITO_train_data'
     save_fcs_with_gates_path = f'{disk_dest}/fcs_with_hierarchical_unito_gates'
     if not os.path.exists(save_fcs_with_gates_path):
         os.makedirs(save_fcs_with_gates_path)
