@@ -1,12 +1,11 @@
-
 import os
+import warnings
 import ssl
 import urllib3
-import warnings
 import pandas as pd
 
 # Removal of unnessecary error msgs caused by shit UNITO code.
-os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # Add this at the very top
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
 ssl._create_default_https_context = ssl._create_unverified_context
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,25 +14,43 @@ warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning) 
 
+# Standard Imports
 from pathlib import Path
 import concurrent.futures
 import random
 import shutil
 import sys
 import fcsparser
+import torch
+import subprocess
 
+# UNITO Imports
 from UNITO_Train_Predict.hyperparameter_tunning import tune
 from UNITO_Train_Predict.Train import train
 from UNITO_Train_Predict.Validation_Recon_Plot_Single import plot_all
 from UNITO_Train_Predict.Data_Preprocessing import process_table, train_test_val_split
 from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 
+# Own Imports
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
 
-# For reproducibility
-import torch
+# RAM DISK mount for quicker train ───────────────────────────────────────────────
+ram_disk = True
+if ram_disk:
+    RAM_BLOCKS = 536_870_912    # 256 GiB
+    DEV = subprocess.check_output([
+        "hdiutil","attach","-nomount", f"ram://{RAM_BLOCKS}"
+    ]).decode().strip()
+    subprocess.check_call([
+        "diskutil","eraseVolume","HFS+","RAMDisk",DEV
+    ], stdout=subprocess.DEVNULL)
+    os.environ.setdefault("UNITO_DEST", "/Volumes/RAMDisk/UNITO_train_data")
+# ────────────────────────────────────────────────────────────────────────────────
+
+# Torch settings - for reproducibility
+train = torch.compile(train)
 torch.manual_seed(0)
 import random
 random.seed(0)
@@ -49,7 +66,7 @@ wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/'
 
 # UNITO requires .csv so convert files
 def _convert_fcs_to_csv(fcs_file, csv_conversion_dir):
-    ''' Takes a .fcs file (in specificed csv_conversion_dir, generates .csv of that fcs_file required for UNITO processing'''
+    """ Takes a .fcs file (in specificed csv_conversion_dir, generates .csv of that fcs_file required for UNITO processing """
     fcs_filename = os.path.basename(fcs_file)
     meta, data = fcsparser.parse(fcs_file, reformat_meta=True)
     df = pd.DataFrame(data)
@@ -59,7 +76,7 @@ def _convert_fcs_to_csv(fcs_file, csv_conversion_dir):
     print(f'{fcs_filename} converted to csv')
 
 def convert_all_fcs():
-    """Convert all FCS files to CSV"""
+    """ Convert all FCS files to CSV """
     print("Converting FCS files to CSV...")
     with concurrent.futures.ProcessPoolExecutor() as executor:
         results = [executor.submit(_convert_fcs_to_csv, os.path.join(fcs_dir, fcs_file), csv_conversion_dir) for fcs_file in fcs_files]
@@ -71,13 +88,13 @@ def convert_all_fcs():
     print("FCS to CSV conversion complete!")
 
 def parse_gates():
-    """Parse gates from WSP file and add to CSV files"""
+    """ Parse gates from WSP file and add to CSV files """
     print("Parsing gates from WSP file...")
     parse_fcs_add_gate_label(wsp_path, wsp_files_path, csv_conversion_dir)
     print("Gate parsing complete!")
 
 def generate_gating_strategy():
-    """Generate and save gating strategy"""
+    """ Generate and save gating strategy """
     print("Generating gating strategy...")
     gating_strategy = extract_gating_strategy(wsp_path, wsp_files_path)
     panel_meta = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/metadata_files/panel_metadata_all_batches.csv'
@@ -89,7 +106,7 @@ def generate_gating_strategy():
 
 
 def main():
-    """Main pipeline execution"""
+    """ Main pipeline execution """
     # Step 1: Convert FCS to CSV
     #convert_all_fcs()
     
@@ -110,24 +127,39 @@ def main():
     path2_lastgate_pred_list = ['./prediction/' for x in range(len(gate_list))]
 
     device = 'mps'
-    n_worker = 16
+    n_worker = 24
     epoches = 100
 
     hyperparameter_set = [
-                          [1e-3, 16],
-                          [1e-4, 16]
+                          [1e-3, 128],
+                          [1e-4, 128]
                           ]
 
     # Step 6. Define paths and build dirs
-    dest = '/Users/user/Documents/UNITO_train_data'
-    save_data_img_path = f'{dest}/Data'
-    save_figure_path = f'{dest}/figures'
-    save_model_path = f'{dest}/model'
-    save_prediction_path = f'{dest}/prediction'
+    if ram_disk == True:
+        dest                 = os.getenv("UNITO_DEST")
+        save_data_img_path   = f"{dest}/Data"
+        save_figure_path     = f"{dest}/figures"
+        save_model_path      = f"{dest}/model"
+        save_prediction_path = f"{dest}/prediction"
 
-    for path in [save_data_img_path, save_figure_path, save_model_path, save_prediction_path]:
-        if not os.path.exists(path):
-            os.makedirs(path)
+        for path in [
+            save_data_img_path,
+            save_figure_path,
+            save_model_path,
+            save_prediction_path
+        ]:
+            os.makedirs(path, exist_ok=True)
+    else:
+        dest                  = '/Users/user/Documents/UNITO_train_data'
+        save_data_img_path    = f'{dest}/Data'
+        save_figure_path      = f'{dest}/figures'
+        save_model_path       = f'{dest}/model'
+        save_prediction_path  = f'{dest}/prediction'
+
+        for path in [save_data_img_path, save_figure_path, save_model_path, save_prediction_path]:
+            if not os.path.exists(path):
+                os.makedirs(path)
 
     # Step 7. 'Train' dir Generation and Management
     train_path = Path(csv_conversion_dir, 'train')
@@ -152,12 +184,14 @@ def main():
     # Step 9. UNITO
     pred_path = csv_conversion_dir
     path2_lastgate_pred_list[0] = pred_path
-
+    
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
 
-    for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
+    for i, (gate_pre, gate, x_axis, y_axis, _ignored) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
         print(f"start UNITO for {gate}")
 
+        path_raw = csv_conversion_dir # path_raw logic was messed up as it was expecting the test .csv in ./predicitons folder. Dummy variable in _ignored to get around this, with path_raw set each iteration.
+        
         # 9a. preprocess training data
         process_table(x_axis, y_axis, gate_pre, gate, str(train_path), convex = True, seq = (gate_pre!=None), dest = dest)
         train_test_val_split(gate, str(train_path), dest, "train")
@@ -174,7 +208,7 @@ def main():
 
         # 9d. predict
         model_path = f'{dest}/model/{gate}_model.pt'
-        data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, path_raw, n_worker, device, save_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
+        data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, csv_conversion_dir, n_worker, device, save_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
 
         # 9e. Evaluation
         accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
@@ -186,8 +220,8 @@ def main():
 
 # Step 10. Create hierarchical gates from all predictions
     print("Creating hierarchical gates...")
-    
-    save_fcs_with_gates_path = f'{dest}/fcs_with_hierarchical_unito_gates'
+    disk_dest = '/Users/user/Documents/UNITO_train_data'
+    save_fcs_with_gates_path = f'{disk_dest}/fcs_with_hierarchical_unito_gates'
     if not os.path.exists(save_fcs_with_gates_path):
         os.makedirs(save_fcs_with_gates_path)
          
