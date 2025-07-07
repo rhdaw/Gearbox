@@ -23,6 +23,8 @@ import fcsparser
 import torch
 import subprocess
 import numpy as np
+import psutil
+import atexit
 
 # UNITO Imports
 from UNITO_Train_Predict.hyperparameter_tunning import tune
@@ -36,22 +38,52 @@ from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_st
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
 # RAM DISK mount and functions for quicker train ───────────────────────────────────────────────
-ram_disk = True
-if ram_disk == True:
-    RAM_BLOCKS = 536_870_912    # 256 GiB
-    DEV = subprocess.check_output([
-        "hdiutil","attach","-nomount", f"ram://{RAM_BLOCKS}"
-    ]).decode().strip()
-    subprocess.check_call([
-        "diskutil","eraseVolume","HFS+","RAMDisk",DEV
-    ], stdout=subprocess.DEVNULL)
-    os.environ.setdefault("UNITO_DEST", "/Volumes/RAMDisk/UNITO_train_data")
+def mount_ramdisk(ram_disk):
+    if not ram_disk:
+        return
+
+    # 1) scan & detach any existing RAMDisk mounts (by path or device)
+    info = subprocess.check_output(["hdiutil", "info"], text=True)
+    for line in info.splitlines():
+        # look for lines like " /dev/disk3    GUID_partition_scheme"
+        # or the mount point "/Volumes/RAMDisk"
+        if "/Volumes/RAMDisk" in line or line.strip().startswith("/dev/ram"):
+            dev = line.split()[0]
+            try:
+                subprocess.check_call(
+                    ["hdiutil", "detach", dev, "-force"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except subprocess.CalledProcessError:
+                pass
+
+    # 2) now create exactly one new RAMDisk
+    vm = psutil.virtual_memory()
+    usable_bytes = vm.available * 0.9
+    blocks = int(usable_bytes // 512)
+    dev = subprocess.check_output(
+        ["hdiutil", "attach", "-nomount", f"ram://{blocks}"],
+        text=True
+    ).strip()
+    subprocess.check_call(
+        ["diskutil", "eraseVolume", "HFS+", "RAMDisk", dev],
+        stdout=subprocess.DEVNULL
+    )
+    os.environ["UNITO_DEST"] = "/Volumes/RAMDisk/UNITO_train_data"
+    
+def cleanup_ramdisk():
+    """ Unmount the RAMDisk so diskimages-helper exits and frees the RAM. """
+    if os.path.ismount("/Volumes/RAMDisk"):
+        subprocess.check_call(
+            ["hdiutil","detach","/Volumes/RAMDisk"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
 
 def flush_ramdisk_to_disk(disk_dest):
     """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest. Empties RAM DISK on completion for next gate."""
     # Copy to disk directories
     ram_dest = os.getenv("UNITO_DEST")
-    subdirs = ["Data", "figures", "model", "prediction"]
+    subdirs = ["figures", "model", "prediction"]
     for sub in subdirs:
         src = os.path.join(ram_dest, sub)
         dst = os.path.join(disk_dest, sub)
@@ -73,6 +105,8 @@ def flush_ramdisk_to_disk(disk_dest):
             os.makedirs(ram_sub, exist_ok=True)
 
     print(f"Flushed RAMDisk contents from {ram_dest} to {disk_dest}")
+
+atexit.register(cleanup_ramdisk) # Runs at script exit
 # ────────────────────────────────────────────────────────────────────────────────
 
 # Torch settings - for reproducibility
@@ -129,8 +163,7 @@ def generate_gating_strategy():
     print("Gating strategy saved!")
     return final_gating_strategy
 
-
-def main():
+def main(ram_disk):
     """ Main pipeline execution """
     # Step 1: Convert FCS to CSV
     #convert_all_fcs()
@@ -204,7 +237,7 @@ def main():
             shutil.move(source_path, destination_path)
 
     # Step 8a. Add Gate Labels to the .csv files in the train folder
-    #add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
+    add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
 
     # Step 9. UNITO
     path2_lastgate_pred_list[0] = csv_conversion_dir
@@ -257,4 +290,5 @@ def main():
     hyperparameter_df.to_csv('./hyperparameter_tunning.csv')
 
 if __name__ == '__main__':
-    main()
+    mount_ramdisk(True)
+    main(True) # True if using RAM DISK
