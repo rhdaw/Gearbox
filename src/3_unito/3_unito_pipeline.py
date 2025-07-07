@@ -85,7 +85,7 @@ np.random.seed(0)
 fcs_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/altered_fcs_files/post_flowai/'
 csv_conversion_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/processing_outputs/autogating_reports_and_data/autogating_csv_conversions/'
 fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
-wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp' # <- Set the path to the WSP
+wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp'
 wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/'
 disk_dest = '/Users/user/Documents/UNITO_train_data'
 

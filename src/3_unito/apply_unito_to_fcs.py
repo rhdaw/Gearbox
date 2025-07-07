@@ -7,6 +7,7 @@ from pathlib import Path
 import concurrent.futures
 import fcsparser
 import os
+import numpy as np
 
 def create_hierarchical_gates_from_unito(gating_strategy, predictions_dir, save_fcs_with_gates_path, fcs_dir):
     """Create hierarchical gates that respect parent-child relationships"""
