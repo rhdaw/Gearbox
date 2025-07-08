@@ -37,13 +37,13 @@ from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
 from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 
-# RAM DISK mount and functions for quicker train ───────────────────────────────────────────────
+# RAM DISK mount and functions for quicker train ─────────────────────────────────
 def mount_ramdisk(ram_disk):
     if not ram_disk:
         return
     
     print("Starting RAM disk creation...")
-    # 1) scan & detach any existing RAMDisk mounts (by path or device)
+    # Scan & detach any existing RAMDisk mounts
     try:
         info = subprocess.check_output(["hdiutil", "info"], text=True)
         print("Checked existing mounts")
@@ -63,7 +63,7 @@ def mount_ramdisk(ram_disk):
             except subprocess.CalledProcessError:
                 pass
 
-    # 2) now create exactly one new RAMDisk
+    # Create RAMDisk
     try:
         vm = psutil.virtual_memory()
         usable_bytes = vm.available * 0.9
@@ -103,9 +103,10 @@ def cleanup_ramdisk():
             )
 
 def flush_ramdisk_to_disk(disk_dest):
-    """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest. Empties RAM DISK on completion for next gate."""
+    """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest.
+     Empties RAM disk on completion for next gate, leaves the .npy data alone. """
     ram_dest = os.getenv("UNITO_DEST")
-    subdirs = ["figures", "model", "prediction","Data"]
+    subdirs = ["figures", "model", "prediction", "Data"]
 
     for sub in subdirs:
         src = os.path.join(ram_dest, sub)
@@ -127,8 +128,6 @@ def flush_ramdisk_to_disk(disk_dest):
             shutil.copy(fn, os.path.join(disk_dest, fn))
 
     print(f"Flushed RAMDisk contents from {ram_dest} to {disk_dest}")
-
-atexit.register(cleanup_ramdisk) # Runs at script exit
 # ────────────────────────────────────────────────────────────────────────────────
 
 # Torch settings - for reproducibility
@@ -140,10 +139,12 @@ np.random.seed(0)
 # Setting Directories
 fcs_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/altered_fcs_files/post_flowai/'
 csv_conversion_dir = '/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/processing_outputs/autogating_reports_and_data/autogating_csv_conversions/'
+train_path = os.path.join(csv_conversion_dir, 'train')
 fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
 wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp'
 wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/'
 disk_dest = '/Users/user/Documents/UNITO_train_data'
+
 
 # UNITO requires .csv so convert files
 def _convert_fcs_to_csv(fcs_file, csv_conversion_dir):
@@ -242,7 +243,6 @@ def main(ram_disk):
                 os.makedirs(path)
 
     # Step 7. 'Train' dir Generation and Management
-    train_path = Path(csv_conversion_dir, 'train')
     if not os.path.exists(train_path):
         os.mkdir(train_path)
 
@@ -272,8 +272,8 @@ def main(ram_disk):
         path_raw = csv_conversion_dir # path_raw logic was messed up as it was expecting the test .csv in ./predicitons folder. Dummy variable in _ignored to get around this, with path_raw set each iteration.
         
         # 9a. preprocess training data
-        process_table(x_axis, y_axis, gate_pre, gate, str(train_path), convex = True, seq = (gate_pre!=None), dest = dest)
-        train_test_val_split(gate, str(train_path), dest, "train")
+        process_table(x_axis, y_axis, gate_pre, gate, train_path, convex = True, seq = (gate_pre!=None), dest = dest)
+        train_test_val_split(gate, train_path, dest, "train")
 
         # 9b. train
         best_lr, best_bs = tune(gate, hyperparameter_set, device, epoches, n_worker, dest)
@@ -314,4 +314,7 @@ def main(ram_disk):
 
 if __name__ == '__main__':
     mount_ramdisk(True)
-    main(ram_disk=True) 
+    try:
+        main(ram_disk=True)
+    finally:
+        cleanup_ramdisk()
