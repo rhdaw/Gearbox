@@ -81,28 +81,27 @@ def cleanup_ramdisk():
 
 def flush_ramdisk_to_disk(disk_dest):
     """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest. Empties RAM DISK on completion for next gate."""
-    # Copy to disk directories
     ram_dest = os.getenv("UNITO_DEST")
-    subdirs = ["figures", "model", "prediction"]
+    subdirs = ["figures", "model", "prediction","Data"]
+
     for sub in subdirs:
         src = os.path.join(ram_dest, sub)
         dst = os.path.join(disk_dest, sub)
         if os.path.exists(src):
             os.makedirs(dst, exist_ok=True)
-            # copy all files & dirs over, overwriting existing
             shutil.copytree(src, dst, dirs_exist_ok=True)
 
-    # Copy summary .csv if possible
-    for fn in ["gating_strategy.csv", "hyperparameter_tunning.csv"]:
-        if os.path.exists(fn):
-            shutil.copy(fn, os.path.join(disk_dest, fn))
-
     # Clear RAM for next gate
-    for sub in subdirs:
+    for sub in ["figures", "model", "prediction"]:
         ram_sub = os.path.join(ram_dest, sub)
         if os.path.exists(ram_sub):
             shutil.rmtree(ram_sub)
             os.makedirs(ram_sub, exist_ok=True)
+    
+    # Copy summary .csv if possible
+    for fn in ["gating_strategy.csv", "hyperparameter_tunning.csv"]:
+        if os.path.exists(fn):
+            shutil.copy(fn, os.path.join(disk_dest, fn))
 
     print(f"Flushed RAMDisk contents from {ram_dest} to {disk_dest}")
 
@@ -237,7 +236,7 @@ def main(ram_disk):
             shutil.move(source_path, destination_path)
 
     # Step 8a. Add Gate Labels to the .csv files in the train folder
-    add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
+    #add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = train_path)
 
     # Step 9. UNITO
     path2_lastgate_pred_list[0] = csv_conversion_dir
@@ -283,12 +282,13 @@ def main(ram_disk):
     save_fcs_with_gates_path = f'{disk_dest}/fcs_with_hierarchical_unito_gates'
     if not os.path.exists(save_fcs_with_gates_path):
         os.makedirs(save_fcs_with_gates_path)
-         
-    create_hierarchical_gates_from_unito(final_gating_strategy, save_prediction_path, save_fcs_with_gates_path, fcs_dir)
+    disk_prediction_path = f'{disk_dest}/prediction'
+
+    create_hierarchical_gates_from_unito(final_gating_strategy, disk_prediction_path, save_fcs_with_gates_path, fcs_dir)
     
     print("Sequential autogating with hierarchical gates finished")
     hyperparameter_df.to_csv('./hyperparameter_tunning.csv')
 
 if __name__ == '__main__':
-    mount_ramdisk(False)
-    main(False) # True if using RAM DISK
+    mount_ramdisk(True)
+    main(ram_disk=True) 
