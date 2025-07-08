@@ -2,6 +2,7 @@ import flowkit as fk
 import os
 import pandas as pd
 import numpy as np
+
 from metric_functions import calc_gmfi, calc_percent_gate
 
 # Setting Directories
@@ -25,7 +26,7 @@ for fcs_file in fcs_files:
     # Send results to a dictionary
     stats_dict = {'Sample': str(fcs_file), 'CD45_gmfi': cd45_gmfi, 'CD45_percent_lymph': cd45_percent_lymph}
 
-    # Append results to master list
+    # Append results dict to master list
     stats_list.append(stats_dict)
 
 # Build and save dataframe
