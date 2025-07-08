@@ -41,12 +41,17 @@ from apply_unito_to_fcs import create_hierarchical_gates_from_unito
 def mount_ramdisk(ram_disk):
     if not ram_disk:
         return
-
+    
+    print("Starting RAM disk creation...")
     # 1) scan & detach any existing RAMDisk mounts (by path or device)
-    info = subprocess.check_output(["hdiutil", "info"], text=True)
+    try:
+        info = subprocess.check_output(["hdiutil", "info"], text=True)
+        print("Checked existing mounts")
+    except Exception as e:
+        print(f"Error checking existing mounts: {e}")
+        return
+    
     for line in info.splitlines():
-        # look for lines like " /dev/disk3    GUID_partition_scheme"
-        # or the mount point "/Volumes/RAMDisk"
         if "/Volumes/RAMDisk" in line or line.strip().startswith("/dev/ram"):
             dev = line.split()[0]
             try:
@@ -54,22 +59,40 @@ def mount_ramdisk(ram_disk):
                     ["hdiutil", "detach", dev, "-force"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
+                print(f"Detached existing RAM disk: {dev}")
             except subprocess.CalledProcessError:
                 pass
 
     # 2) now create exactly one new RAMDisk
-    vm = psutil.virtual_memory()
-    usable_bytes = vm.available * 0.9
-    blocks = int(usable_bytes // 512)
-    dev = subprocess.check_output(
-        ["hdiutil", "attach", "-nomount", f"ram://{blocks}"],
-        text=True
-    ).strip()
-    subprocess.check_call(
-        ["diskutil", "eraseVolume", "HFS+", "RAMDisk", dev],
-        stdout=subprocess.DEVNULL
-    )
-    os.environ["UNITO_DEST"] = "/Volumes/RAMDisk/UNITO_train_data"
+    try:
+        vm = psutil.virtual_memory()
+        usable_bytes = vm.available * 0.9
+        blocks = int(usable_bytes // 512)
+        print(f"Creating RAM disk: {blocks} blocks ({usable_bytes/1024/1024/1024:.1f} GB)")
+        
+        dev = subprocess.check_output(
+            ["hdiutil", "attach", "-nomount", f"ram://{blocks}"],
+            text=True
+        ).strip()
+        print(f"RAM device created: {dev}")
+        
+        subprocess.check_call(
+            ["diskutil", "eraseVolume", "HFS+", "RAMDisk", dev],
+            stdout=subprocess.DEVNULL
+        )
+        print("RAM disk formatted")
+        
+        os.environ["UNITO_DEST"] = "/Volumes/RAMDisk/UNITO_train_data"
+        print(f"UNITO_DEST set to: {os.environ['UNITO_DEST']}")
+        
+        # Verify it was created
+        if os.path.exists("/Volumes/RAMDisk"):
+            print("✅ RAM disk successfully mounted at /Volumes/RAMDisk")
+        else:
+            print("❌ RAM disk mount failed")
+            
+    except Exception as e:
+        print(f"Error creating RAM disk: {e}")
     
 def cleanup_ramdisk():
     """ Unmount the RAMDisk so diskimages-helper exits and frees the RAM. """
