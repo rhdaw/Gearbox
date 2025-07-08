@@ -10,6 +10,7 @@ dependencies = [
     "fcsparser>=0.2.8",
     "fcswrite>=0.6.2",
     "flowkit>=1.2.3",
+    "flowsom>=0.2.1",
     "pandas>=2.2.3",
     "torchvision>=0.22.0",
     "unito",
