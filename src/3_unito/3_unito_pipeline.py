@@ -290,5 +290,5 @@ def main(ram_disk):
     hyperparameter_df.to_csv('./hyperparameter_tunning.csv')
 
 if __name__ == '__main__':
-    mount_ramdisk(True)
-    main(True) # True if using RAM DISK
+    mount_ramdisk(False)
+    main(False) # True if using RAM DISK
