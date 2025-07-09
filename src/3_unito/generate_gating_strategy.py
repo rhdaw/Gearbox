@@ -3,8 +3,9 @@ import flowkit as fk
 import pandas as pd
 import os
 from lxml import etree as ET
-import re
 import concurrent.futures
+
+# Adding gate labels to train .csv files.
 
 def _extract_gate_names_from_tuple(gate_tuple):
     """Extract all gate names from the tuple structure"""
@@ -92,13 +93,16 @@ def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
             # Create DataFrame with separate gate columns (UNITO format)
             gate_df = pd.DataFrame(gate_data)
             print('Gating data to be appended to gated flow files:')
-            print(gate_df)
+            print(gate_df.columns.values)
             _adjust_filename_and_save(sample_id, csv_dir, gate_df, gate_data)
     
         except Exception as e:
             print(f"Error processing {sample_id}: {e}")
     print('.csv processing complete')
     return None
+
+
+# Extracting gating strategy from wsp 
 
 def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structure.csv"):
     """Extract gating strategy from FlowJo workspace and save as a CSV for UNITO to use
@@ -233,6 +237,8 @@ def clean_gating_strategy(panel_metadata_path, gating_strat_df = None):
     gating_strat_df['Y_axis'] = gating_strat_df['Y_axis'].map(channel_to_antigen).fillna(gating_strat_df['Y_axis'])
 
     return gating_strat_df
+
+# Add binary classification gate information to test .csv files.
 
 def _add_gate_cols(f, all_train_cols, test_dir):
     test_df = pd.read_csv(os.path.join(test_dir, f))
