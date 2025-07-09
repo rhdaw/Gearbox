@@ -7,6 +7,7 @@ import pandas as pd
 # Removal of unnessecary error msgs caused by shit UNITO code.
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
 ssl._create_default_https_context = ssl._create_unverified_context
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
@@ -131,7 +132,6 @@ def flush_ramdisk_to_disk(disk_dest):
 # ────────────────────────────────────────────────────────────────────────────────
 
 # Torch settings - for reproducibility
-train = torch.compile(train)
 torch.manual_seed(0)
 random.seed(0)
 np.random.seed(0)
