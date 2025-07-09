@@ -157,7 +157,7 @@ wsp_path = '/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp'
 wsp_files_path = '/Users/user/Documents/UNITO_train_wsp/' #these are the fcs files that get moved to csv_train_path
 
 # Prediction .csv files (converted)
-csv_conversion_dir = '/Users/user/Documents/UNITO_csv_conversion'
+csv_conversion_dir = '/Users/user/Documents/UNITO_csv_conversion/'
 csv_train_path = os.path.join(csv_conversion_dir, 'train')
 if not os.path.exists(csv_train_path):
     os.mkdir(csv_train_path)
@@ -248,12 +248,13 @@ def main(ram_disk):
 
     device = 'mps'
     n_worker = 24
-    epoches = 100
+    epoches = 1000
 
     hyperparameter_set = [
-                          [1e-3, 128],
-                          [1e-4, 128]
-                          ]
+        [1e-3, 64],
+        [1e-4, 64],
+        [1e-4, 128]
+    ]
 
     # Step 6. Define paths and build dirs for UNITO
     if ram_disk == True:
@@ -294,7 +295,7 @@ def main(ram_disk):
     #     destination_path = os.path.join(csv_train_path, training_csv_file)
     #     if os.path.exists(source_path):  # Check if file exists before moving
     #         shutil.move(source_path, destination_path)
-    
+
     # OR (Optional) Step 8. Downsample train .csv files and move to RAM disk
     for f in training_csv_files:
         csv = os.path.join(csv_conversion_dir, f)
