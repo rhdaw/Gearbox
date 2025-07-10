@@ -3,6 +3,7 @@ import warnings
 import ssl
 import urllib3
 import pandas as pd
+import time
 
 # Removal of unnessecary error msgs caused by shit UNITO code.
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
@@ -117,8 +118,8 @@ def flush_ramdisk_to_disk(disk_dest):
             os.makedirs(dst, exist_ok=True)
             shutil.copytree(src, dst, dirs_exist_ok=True)
 
-    # Clear RAM for next gate
-    for sub in ["figures", "model", "prediction"]:
+    # Clear RAM
+    for sub in ["figures", "model", "prediction", "Data"]:
         ram_sub = os.path.join(ram_dest, sub)
         if os.path.exists(ram_sub):
             shutil.rmtree(ram_sub)
@@ -228,10 +229,10 @@ def downsample_csv(in_csv, max_rows=200_000, out_dir=None):
 def main(ram_disk):
     """ Main pipeline execution """
     # Step 1: Convert all FCS to CSV in fcs_dir - function sends them to the csv_conversion_dir following conversion.
-    convert_all_fcs()
+    #convert_all_fcs()
     
     # Step 2: Parse gates from WSP and add binary classification to CSV files
-    parse_gates()
+    #parse_gates()
 
     # Step 4: Generate gating strategy for UNITO
     final_gating_strategy = generate_gating_strategy()
@@ -244,17 +245,27 @@ def main(ram_disk):
     gate_list = list(gating.Gate)
     x_axis_list = list(gating.X_axis)
     y_axis_list = list(gating.Y_axis)
-    path2_lastgate_pred_list = ['./prediction/' for x in range(len(gate_list))]
+    
+    path2_lastgate_pred_list = [csv_conversion_dir]
+    for idx in range(1, len(gate_list)):
+            parent_gate = gate_pre_list[idx]
+            path2_lastgate_pred_list.append(f'./prediction/{parent_gate}')
 
     device = 'mps'
-    n_worker = 24
-    epoches = 1000
+    n_worker = 30
+    epoches = 1
 
     hyperparameter_set = [
-        [1e-3, 64],
-        [1e-4, 64],
-        [1e-4, 128]
+    [1e-3,  128],   # Fast convergence, stable
+    [1e-4,  256],   # Balanced approach  
+    [5e-4,  512],   # Compromise: mid-LR + large batch
     ]
+
+    # hyperparameter_set = [
+    # [1e-3,   64],   # ~47,000 updates per epoch
+    # [1e-4,  128],   # ~23,000 updates per epoch  
+    # [5e-4,  256],   # ~12,000 updates per epoch
+    # ]
 
     # Step 6. Define paths and build dirs for UNITO
     if ram_disk == True:
@@ -303,47 +314,47 @@ def main(ram_disk):
     csv_train_path = downsample_path
 
     # Step 8a. Add Gate Labels to the test .csv files
-    add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = csv_train_path)
+    #add_gate_labels_to_test_files(test_dir = csv_conversion_dir, train_dir = csv_train_path)
 
     # Step 9. UNITO
-    path2_lastgate_pred_list[0] = csv_conversion_dir
-    
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
+    with cd(dest):
+        for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
+            print(f"start UNITO for {gate}")
+            print(f'gate_pre_list: {gate_pre_list}, gate_list: {gate_list}, path2_lastgate_pred_list: {path2_lastgate_pred_list}')
+                
+            # 9a. preprocess training data
+            process_table(x_axis, y_axis, gate_pre, gate, csv_train_path, convex = True, seq = (gate_pre!=None), dest = dest)
+            train_test_val_split(gate, csv_train_path, dest, "train")
 
-    for i, (gate_pre, gate, x_axis, y_axis, _ignored) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
-        print(f"start UNITO for {gate}")
+            # 9b. train
+            best_lr, best_bs = tune(gate, hyperparameter_set, device, epoches, n_worker, dest)
+            hyperparameter_df.loc[len(hyperparameter_df)] = [gate, best_lr, best_bs]
+            train(gate, best_lr, device, best_bs, epoches, n_worker, dest)
 
-        path_raw = csv_conversion_dir # path_raw logic was messed up as it was expecting the test .csv in ./predicitons folder. Dummy variable in _ignored to get around this, with path_raw set each iteration.
-        
-        # 9a. preprocess training data
-        process_table(x_axis, y_axis, gate_pre, gate, csv_train_path, convex = True, seq = (gate_pre!=None), dest = dest)
-        train_test_val_split(gate, csv_train_path, dest, "train")
+            # 9c. preprocess prediction data
+            print(f"Start prediction for {gate}")
+            process_table(x_axis, y_axis, gate_pre, gate, path_raw, convex = True, seq = (gate_pre!=None), dest = dest)
+            train_test_val_split(gate, path_raw, dest, 'pred')
 
-        # 9b. train
-        best_lr, best_bs = tune(gate, hyperparameter_set, device, epoches, n_worker, dest)
-        hyperparameter_df.loc[len(hyperparameter_df)] = [gate, best_lr, best_bs]
-        train(gate, best_lr, device, best_bs, epoches, n_worker, dest)
+            # 9d. predict
+            model_path = f'{dest}/model/{gate}_model.pt'
+            gate_prediction_path = f'{save_prediction_path}/{gate}'  # Gate-specific path
+            os.makedirs(gate_prediction_path, exist_ok=True)  # Ensure directory exists
 
-        # 9c. preprocess prediction data
-        print(f"Start prediction for {gate}")
-        process_table(x_axis, y_axis, gate_pre, gate, csv_conversion_dir, convex = True, seq = (gate_pre!=None), dest = dest)
-        train_test_val_split(gate, csv_conversion_dir, dest, 'pred')
+            data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, path_raw, n_worker, device, gate_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
 
-        # 9d. predict
-        model_path = f'{dest}/model/{gate}_model.pt'
-        data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, csv_conversion_dir, n_worker, device, save_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
+            # 9e. Evaluation
+            accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
+            print(f"{gate}: accuracy:{accuracy}, recall:{recall}, precision:{precision}, f1 score:{f1}")
 
-        # 9e. Evaluation
-        accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
-        print(f"{gate}: accuracy:{accuracy}, recall:{recall}, precision:{precision}, f1 score:{f1}")
+            # 9f. Plot gating results <- skipping this for the moment NEED TO CHANGE UNITO code to just os.path.splitext() instead of whatever weirdness it is doing.
 
-        # 9f. Plot gating results
-        with cd(dest):
-            plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
-        print("All UNITO prediction visualization saved")
+            # plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
+            # print("All UNITO prediction visualization saved")
 
-        # Flush RAM DISK for next gate.
-        flush_ramdisk_to_disk(disk_dest)
+    # Flush RAM DISK for next gate.
+    flush_ramdisk_to_disk(disk_dest)
 
 # Step 10. Create hierarchical gates from all predictions
     print("Creating hierarchical gates...")
