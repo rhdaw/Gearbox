@@ -165,7 +165,7 @@ if not os.path.exists(csv_train_dir):
 
 # UNITO train/prediciton save dir
 disk_dest = '/Users/user/Documents/UNITO_train_data'
-disk_prediction_dir = os.join(disk_dest, 'prediction')
+disk_prediction_dir = os.path.join(disk_dest, 'prediction/')
 # ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 # UNITO requires .csv so convert files
@@ -310,7 +310,7 @@ def main(ram_disk):
     path2_lastgate_pred_list = [csv_conversion_dir]
     for idx in range(1, len(gate_list)):
             parent_gate = gate_pre_list[idx]
-            path2_lastgate_pred_list.append(f'./prediction/{parent_gate}')
+            path2_lastgate_pred_list.append(f'./prediction/{parent_gate}/')
 
     # Step 9. UNITO
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
@@ -351,7 +351,7 @@ def main(ram_disk):
     flush_ramdisk_to_disk(disk_dest)
 
     # Step 10. Create hierarchical gates from all predictions
-    run_unito_inference(os.join(disk_dest, 'model'), disk_prediction_dir, os.join(disk_dest, 'gating_strategy.csv'), csv_conversion_dir)
+    run_unito_inference(os.path.join(disk_dest, 'model'), disk_prediction_dir, os.path.join(disk_dest, 'gating_strategy.csv'), csv_conversion_dir)
     hyperparameter_df.to_csv('./hyperparameter_tuning.csv')
 
 if __name__ == '__main__':
