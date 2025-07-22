@@ -37,8 +37,7 @@ from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 
 # Own Imports
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
-from apply_unito_to_fcs import create_hierarchical_gates_from_unito, run_unito_inference
-
+from apply_unito_to_fcs import apply_predictions_to_csv
 
 # RAM DISK mount and functions for quicker train ─────────────────────────────────
 def mount_ramdisk(ram_disk):
@@ -300,7 +299,7 @@ def main(ram_disk):
     # OR (Optional) Step 8. Downsample train .csv files and move to RAM disk
     for f in training_csv_files:
         csv = os.path.join(csv_conversion_dir, f)
-        downsample_csv(csv, max_rows=200_000, out_dir= downsample_path)
+        downsample_csv(csv, max_rows=500_000, out_dir= downsample_path)
     csv_train_dir = downsample_path
 
     # Step 8a. Add Gate Labels to the test .csv files
@@ -308,16 +307,20 @@ def main(ram_disk):
 
     # Step 8b. Set csv_train_dir for the UNITO unpacking
     path2_lastgate_pred_list = [csv_conversion_dir]
+
     for idx in range(1, len(gate_list)):
             parent_gate = gate_pre_list[idx]
             path2_lastgate_pred_list.append(f'./prediction/{parent_gate}/')
 
     # Step 9. UNITO
     hyperparameter_df = pd.DataFrame(columns = ['gate','learning_rate','batch_size'])
+    all_predictions = {} 
+    
     with cd(dest):
         for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
+
             print(f"start UNITO for {gate}")
-               
+
             # 9a. preprocess training data
             process_table(x_axis, y_axis, gate_pre, gate, csv_train_dir, convex = True, seq = (gate_pre!=None), dest = dest)
             train_test_val_split(gate, csv_train_dir, dest, "train")
@@ -329,6 +332,13 @@ def main(ram_disk):
 
             # 9c. preprocess prediction data
             print(f"Start prediction for {gate}")
+
+            if i == 0:  # Capture the files being processed for the FIRST gate only
+                processed_files_list = [f for f in os.listdir(path_raw) 
+                                            if f.endswith('.csv') 
+                                            and not f.endswith('_with_gate_label.csv')]
+            print(f"Captured file processing order: {len(processed_files_list)} files")
+
             process_table(x_axis, y_axis, gate_pre, gate, path_raw, convex = True, seq = (gate_pre!=None), dest = dest)
             train_test_val_split(gate, path_raw, dest, 'pred')
 
@@ -336,8 +346,13 @@ def main(ram_disk):
             model_path = f'{dest}/model/{gate}_model.pt'
             gate_prediction_path = f'{save_prediction_path}/{gate}'  # Gate-specific path
             os.makedirs(gate_prediction_path, exist_ok=True)  # Ensure directory exists
-
-            data_df_pred = UNITO_gating(model_path, x_axis, y_axis, gate, path_raw, n_worker, device, gate_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
+            data_df_pred, predictions_dict = UNITO_gating(model_path, x_axis, y_axis, gate, path_raw, n_worker, device, gate_prediction_path, dest, seq = (gate_pre!=None), gate_pre=gate_pre)
+            
+            # Collect all predictions for this gate, across all files, to the all_predictions dict - gate_predictions is a nested dict of {key = {gate}_pred: value = [binary classifiers]}
+            for filename, gate_predictions in predictions_dict.items():
+                if filename not in all_predictions:
+                    all_predictions[filename] = {}
+                all_predictions[filename].update(gate_predictions)
 
             # 9e. Evaluation
             accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
@@ -347,11 +362,13 @@ def main(ram_disk):
             # plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
             # print("All UNITO prediction visualization saved")
 
-    # Flush RAM DISK for next gate.
+    # Flush RAM DISK
     flush_ramdisk_to_disk(disk_dest)
 
-    # Step 10. Create hierarchical gates from all predictions
-    run_unito_inference(os.path.join(disk_dest, 'model'), disk_prediction_dir, os.path.join(disk_dest, 'gating_strategy.csv'), csv_conversion_dir)
+    # Step 10. Apply predicitons from dict to csv files
+    apply_predictions_to_csv(all_predictions, csv_conversion_dir)
+
+    # Step 11. Save hyperparameters for future
     hyperparameter_df.to_csv('./hyperparameter_tuning.csv')
 
 if __name__ == '__main__':
