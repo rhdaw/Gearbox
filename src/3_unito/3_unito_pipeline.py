@@ -248,7 +248,7 @@ def main(ram_disk):
 
     device = 'mps'
     n_worker = 30
-    epoches = 5
+    epoches = 7
 
     hyperparameter_set = [
     [1e-3,  128],   
@@ -299,7 +299,7 @@ def main(ram_disk):
     # OR (Optional) Step 8. Downsample train .csv files and move to RAM disk
     for f in training_csv_files:
         csv = os.path.join(csv_conversion_dir, f)
-        downsample_csv(csv, max_rows=500_000, out_dir= downsample_path)
+        downsample_csv(csv, max_rows=200_000, out_dir= downsample_path)
     csv_train_dir = downsample_path
 
     # Step 8a. Add Gate Labels to the test .csv files
@@ -362,14 +362,14 @@ def main(ram_disk):
             # plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
             # print("All UNITO prediction visualization saved")
 
-    # Flush RAM DISK
-    flush_ramdisk_to_disk(disk_dest)
-
     # Step 10. Apply predicitons from dict to csv files
     apply_predictions_to_csv(all_predictions, csv_conversion_dir)
 
     # Step 11. Save hyperparameters for future
     hyperparameter_df.to_csv('./hyperparameter_tuning.csv')
+
+    # Flush RAM DISK
+    flush_ramdisk_to_disk(disk_dest)
 
 if __name__ == '__main__':
     mount_ramdisk(True)

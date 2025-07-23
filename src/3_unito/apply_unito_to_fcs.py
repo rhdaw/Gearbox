@@ -47,8 +47,6 @@ def _csv_load_addgates_save(gate_predictions, csv_conversion_dir, filename):
             continue
         
         original_data[f'UNITO_{gate_name}'] = predictions
-        positive_count = sum(predictions)
-        print(f"Added {gate_name}: {positive_count} positive cells out of {len(predictions)}")
         gates_added += 1
     
     if gates_added == 0:
