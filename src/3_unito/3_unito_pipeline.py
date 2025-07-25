@@ -44,28 +44,13 @@ def mount_ramdisk(ram_disk):
     if not ram_disk:
         return
     
-    print("Starting RAM disk creation...")
-    # Scan & detach any existing RAMDisk mounts
+    print("Clearing current RAM disk...")
     try:
-        info = subprocess.check_output(["hdiutil", "info"], text=True)
-        print("Checked existing mounts")
+        cleanup_ramdisk()
     except Exception as e:
-        print(f"Error checking existing mounts: {e}")
-        return
-    
-    for line in info.splitlines():
-        if "/Volumes/RAMDisk" in line or line.strip().startswith("/dev/ram"):
-            dev = line.split()[0]
-            try:
-                subprocess.check_call(
-                    ["hdiutil", "detach", dev, "-force"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                print(f"Detached existing RAM disk: {dev}")
-            except subprocess.CalledProcessError:
-                pass
+        print(f"Warning: Initial cleanup failed, continuing: {e}")
 
-    # Create RAMDisk
+    print("Starting RAM disk creation...")
     try:
         vm = psutil.virtual_memory()
         usable_bytes = vm.available * 0.9
@@ -97,12 +82,25 @@ def mount_ramdisk(ram_disk):
         print(f"Error creating RAM disk: {e}")
     
 def cleanup_ramdisk():
-    """ Unmount the RAMDisk so diskimages-helper exits and frees the RAM. """
-    if os.path.ismount("/Volumes/RAMDisk"):
-        subprocess.check_call(
-            ["hdiutil","detach","/Volumes/RAMDisk"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
+    """ Unmount any current RAMDisks so diskimages-helper exits and frees the RAM. """
+    try:
+        info = subprocess.check_output(["hdiutil", "info"], text=True)
+        print("Checked existing mounts")
+    except Exception as e:
+        print(f"Error checking existing mounts: {e}")
+        return
+    
+    for line in info.splitlines():
+        if "/Volumes/RAMDisk" in line or line.strip().startswith("/dev/ram"):
+            dev = line.split()[0]
+            try:
+                subprocess.check_call(
+                    ["hdiutil", "detach", dev, "-force"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                print(f"Detached existing RAM disk: {dev}")
+            except subprocess.CalledProcessError:
+                pass
 
 def flush_ramdisk_to_disk(disk_dest):
     """ Copy the four UNITO output subfolders plus strategy & hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest.
@@ -253,7 +251,13 @@ def main(ram_disk):
     hyperparameter_set = [
     [1e-3,  128],   
     [1e-4,  256],   
-    [5e-4,  512],   
+    [5e-4,  512]
+    ]   
+    
+    problematic_gate_hyperparameters = [
+    [1e-4,  32],
+    [1e-5,  128],
+    [2e-4,  64] 
     ]
 
     # Step 6. Define paths and build dirs for UNITO
@@ -318,6 +322,14 @@ def main(ram_disk):
     
     with cd(dest):
         for i, (gate_pre, gate, x_axis, y_axis, path_raw) in enumerate(zip(gate_pre_list, gate_list, x_axis_list, y_axis_list, path2_lastgate_pred_list)):
+
+            # Granular hyperparameter settings for gates - better scores.
+            if 'neutrophil' in gate.lower():
+                hyperparameter_set = problematic_gate_hyperparameters
+                print(f"Using specialized hyperparameters for {gate}")
+            else:
+                hyperparameter_set = hyperparameter_set
+                print(f"Using default hyperparameters for {gate}")
 
             print(f"start UNITO for {gate}")
 

@@ -14,6 +14,7 @@ dependencies = [
     "flowsom>=0.2.1",
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
+    "pytometry>=0.1.4",
     "torchvision>=0.22.0",
     "unito",
 ]
