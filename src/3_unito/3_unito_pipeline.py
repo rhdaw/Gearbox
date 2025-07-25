@@ -3,7 +3,6 @@ import warnings
 import ssl
 import urllib3
 import pandas as pd
-import time
 
 # Removal of unnessecary error msgs caused by shit UNITO code.
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
@@ -255,9 +254,10 @@ def main(ram_disk):
     ]   
     
     problematic_gate_hyperparameters = [
-    [1e-4,  32],
-    [1e-5,  128],
-    [2e-4,  64] 
+    [1e-5,  16],
+    [5e-6,  32],
+    [1e-6,  64],
+    [1e-5, 8]
     ]
 
     # Step 6. Define paths and build dirs for UNITO
@@ -326,6 +326,7 @@ def main(ram_disk):
             # Granular hyperparameter settings for gates - better scores.
             if 'neutrophil' in gate.lower():
                 hyperparameter_set = problematic_gate_hyperparameters
+                epoches = 15
                 print(f"Using specialized hyperparameters for {gate}")
             else:
                 hyperparameter_set = hyperparameter_set

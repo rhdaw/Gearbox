@@ -21,3 +21,8 @@ dependencies = [
 
 [tool.uv.sources]
 unito = { git = "https://github.com/happyhypocrite/UNITO" }
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W"]  # E: pycodestyle (PEP8), F: pyflakes, W: warnings
+ignore = []
