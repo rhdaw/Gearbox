@@ -4,7 +4,8 @@ import ssl
 import urllib3
 import pandas as pd
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List
+
 # Env settings
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
@@ -39,6 +40,15 @@ from UNITO_Train_Predict.Predict import UNITO_gating, evaluation
 from generate_gating_strategy import parse_fcs_add_gate_label, extract_gating_strategy, clean_gating_strategy, add_gate_labels_to_test_files
 from apply_unito_to_fcs import apply_predictions_to_csv
 
+@contextmanager
+def cd(newdir):
+    prev = os.getcwd()
+    os.chdir(newdir)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
+
 @dataclass
 class PipelineConfig:
     """Configuration for the UNITO pipeline"""
@@ -52,7 +62,7 @@ class PipelineConfig:
     csv_conversion_dir: str
     disk_dest: str
     # Processing settings
-    max_rows: int = 200_000
+    downsample_max_rows: int = 200_000
     device: str = 'mps'
     n_worker: int = 30
     epochs: int = 7
@@ -60,22 +70,25 @@ class PipelineConfig:
     # Hyperparameters
     default_hyperparameters: List = []
     problematic_gate_hyperparameters: List = []
+    #Problematic gates
+    problematic_gate_list: List = []
 
-    def __dir_assign__(self, ram_disk: bool):
+    def __dir_assign__(self):
         if self.ram_disk:
-            dest = os.getenv("UNITO_DEST")
-            save_data_img_path   = f"{dest}/Data/"
-            save_figure_path     = f"{dest}/figures/"
-            save_model_path      = f"{dest}/model/"
-            save_prediction_path = f"{dest}/prediction/"
-            downsample_path      = f"{dest}/downsample/"
+            self.dest = os.getenv("UNITO_DEST")
+            save_data_img_path   = f"{self.dest}/Data/"
+            save_figure_path     = f"{self.dest}/figures/"
+            save_model_path      = f"{self.dest}/model/"
+            save_prediction_path = f"{self.dest}/prediction/"
+            downsample_path      = f"{self.dest}/downsample/"
         else:
-            dest = self.disk_dest
-            self.save_data_img_path = f"{dest}/Data/"
-            self.save_figure_path = f"{dest}/figures/"
-            self.save_model_path = f"{dest}/model/"
-            self.save_prediction_path = f"{dest}/prediction/"
-            self.downsample_path = f"{dest}/downsample/"
+            self.dest = self.disk_dest
+            self.save_data_img_path = f"{self.dest}/Data/"
+            self.save_figure_path = f"{self.dest}/figures/"
+            self.save_model_path = f"{self.dest}/model/"
+            self.save_prediction_path = f"{self.dest}/prediction/"
+            self.downsample_path = f"{self.dest}/downsample/"
+
         for path in [
             save_data_img_path,
             save_figure_path,
@@ -155,40 +168,215 @@ class UNITOTrainer:
     """Handles UNITO training and prediction"""
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.hyperparameter_df = pd.DataFrame(columns=['gate',
-                                                       'learning_rate',
-                                                       'batch_size'])
-        self.all_predictions = {}
+        self.all_predictions ={}
+        self.csv_train_dir = os.path.join(self.config.csv_conversion_dir, 'train')
 
-    def train_gate(self, gate_config: Dict) -> Dict:
-        """Train a single gate"""
-        gate = gate_config['gate']
-        hyperparameters = self._get_hyperparameters(gate)
-        # Your existing 9a-9e logic for a single gate
-        # Return metrics
-    def _get_hyperparameters(self, gate: str) -> List:
-        """Choose hyperparameters based on gate type"""
-        if 'neutrophil' in gate.lower():
-            return self.config.problematic_gate_hyperparameters
-        return self.config.default_hyperparameters
+        if not os.path.exists(self.csv_train_dir):
+            os.mkdir(self.csv_train_dir)
+
+    def train_all_gates(self,
+                        gate_pre_list,
+                        gate_list,
+                        x_axis_list,
+                        y_axis_list,
+                        path2_lastgate_pred_list,
+                        csv_train_dir,
+                        dest,
+                        save_prediction_path,
+                        save_figure_path,
+                        hyperparameter_set,
+                        hyperparameter_df,
+                        problematic_gate_hyperparameters,
+                        all_predictions,
+                        n_worker,
+                        device):
+
+        for i, (gate_pre,
+                gate,
+                x_axis,
+                y_axis,
+                path_raw) in enumerate(zip(gate_pre_list,
+                                           gate_list,
+                                           x_axis_list,
+                                           y_axis_list,
+                                           path2_lastgate_pred_list)):
+
+            # Granular hyperparameter settings for problematic gates
+            if self.config.problematic_gate_list:
+                for g in self.config.problematic_gate_list:
+                    if g in gate.lower():
+                        self.hyperparameter_set = problematic_gate_hyperparameters
+                        epoches = self.config.problematic_epochs
+                        print(f"Using specialized hyperparameters for {gate}")
+                    else:
+                        self.hyperparameter_set = hyperparameter_set
+                        print(f"Using default hyperparameters for {gate}")
+
+            print(f"start UNITO for {gate}")
+            # 9a. preprocess training data
+            process_table(x_axis,
+                          y_axis,
+                          gate_pre,
+                          gate,
+                          csv_train_dir,
+                          convex = True,
+                          seq = (gate_pre is not None),
+                          dest = dest)
+            train_test_val_split(gate, csv_train_dir, dest, "train")
+
+            # 9b. train
+            best_lr, best_bs = tune(gate,
+                                    hyperparameter_set,
+                                    device,
+                                    epoches,
+                                    n_worker,
+                                    dest)
+            hyperparameter_df.loc[len(hyperparameter_df)] = [gate, best_lr, best_bs]
+            train(gate, best_lr, device, best_bs, epoches, n_worker, dest)
+
+            # 9c. preprocess prediction data
+            print(f"Start prediction for {gate}")
+            if i == 0:
+                processed_files_list = [f for f in os.listdir(path_raw)
+                                            if f.endswith('.csv')
+                                            and not f.endswith('_with_gate_label.csv')]
+            print(f"Captured file processing order: {len(processed_files_list)} files")
+            process_table(x_axis,
+                          y_axis,
+                          gate_pre,
+                          gate,
+                          path_raw,
+                          convex = True,
+                          seq = (gate_pre is not None),
+                          dest = dest)
+            train_test_val_split(gate, path_raw, dest, 'pred')
+
+            # 9d. predict
+            model_path = f'{dest}/model/{gate}_model.pt'
+            gate_prediction_path = f'{save_prediction_path}/{gate}'
+            os.makedirs(gate_prediction_path, exist_ok=True)
+            data_df_pred, predictions_dict = UNITO_gating(model_path,
+                                                          x_axis,
+                                                          y_axis,
+                                                          gate,
+                                                          path_raw,
+                                                          n_worker,
+                                                          device,
+                                                          gate_prediction_path,
+                                                          dest,
+                                                          seq = (gate_pre is not None),
+                                                          gate_pre=gate_pre)
+
+            # Collect all predictions for this gate, across all files,
+            # to the all_predictions dict
+            # gate_predictions is a nested dict of {key = {gate}_pred: value = [binary classifiers]}
+
+            for filename, gate_predictions in predictions_dict.items():
+                if filename not in all_predictions:
+                    all_predictions[filename] = {}
+                all_predictions[filename].update(gate_predictions)
+
+            # 9e. Evaluation
+            accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
+            print(f"{gate}: accuracy:{accuracy}, recall:{recall}, precision:{precision}, f1 score:{f1}")
+
+            # 9f. Plot gating results
+            # <- skipping this for the moment
+            # NEED TO CHANGE UNITO code to just os.path.splitext()
+            # instead of whatever weirdness it is doing.
+            # plot_all(gate_pre, gate, x_axis, y_axis, path_raw, save_figure_path)
+            # print("All UNITO prediction visualization saved")
 
 class RAMDiskManager:
     """Handles RAM disk operations"""
     def __init__(self, config: PipelineConfig):
         self.config = config
 
-    @staticmethod
-    def mount_ramdisk(ram_disk: bool) -> None:
-        """Your existing mount_ramdisk logic"""
-        # ... existing code ...
-    @staticmethod
-    def cleanup_ramdisk() -> None:
-        """Your existing cleanup_ramdisk logic"""
-        # ... existing code ...
-    @staticmethod
-    def flush_ramdisk_to_disk(disk_dest: str) -> None:
-        """Your existing flush logic"""
-        # ... existing code ...
+    def cleanup_ramdisk(self) -> None:
+        """Unmount any current RAMDisks so diskimages-helper exits and frees the RAM."""
+        try:
+            info = subprocess.check_output(["hdiutil", "info"], text=True)
+            print("Checked existing mounts")
+        except Exception as e:
+            print(f"Error checking existing mounts: {e}")
+            return
+
+        for line in info.splitlines():
+            if "/Volumes/RAMDisk" in line or line.strip().startswith("/dev/ram"):
+                dev = line.split()[0]
+                try:
+                    subprocess.check_call(
+                        ["hdiutil", "detach", dev, "-force"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    print(f"Detached existing RAM disk: {dev}")
+                except subprocess.CalledProcessError:
+                    pass
+
+    def mount_ramdisk(self, ram_disk: bool) -> None:
+        if not ram_disk:
+            return
+        print("Clearing current RAM disk...")
+        try:
+            self.cleanup_ramdisk()
+        except Exception as e:
+            print(f"Warning: Initial cleanup failed, continuing: {e}")
+
+        print("Starting RAM disk creation...")
+        try:
+            vm = psutil.virtual_memory()
+            usable_bytes = vm.available * 0.9
+            blocks = int(usable_bytes // 512)
+            print(f"Creating RAM disk: {blocks} blocks ({usable_bytes/1024/1024/1024:.1f} GB)")
+
+            dev = subprocess.check_output(
+                ["hdiutil", "attach", "-nomount", f"ram://{blocks}"],
+                text=True
+            ).strip()
+            print(f"RAM device created: {dev}")
+
+            subprocess.check_call(
+                ["diskutil", "eraseVolume", "HFS+", "RAMDisk", dev],
+                stdout=subprocess.DEVNULL
+            )
+            print("RAM disk formatted")
+
+            os.environ["UNITO_DEST"] = "/Volumes/RAMDisk/UNITO_train_data"
+            print(f"UNITO_DEST set to: {os.environ['UNITO_DEST']}")
+
+            if os.path.exists("/Volumes/RAMDisk"):
+                print("✅ RAM disk successfully mounted at /Volumes/RAMDisk")
+            else:
+                print("❌ RAM disk mount failed")
+
+        except Exception as e:
+            print(f"Error creating RAM disk: {e}")
+
+    def flush_ramdisk_to_disk(self, disk_dest: str) -> None:
+        """ Copy the four UNITO output subfolders plus strategy &
+        hyperparam CSVs from the RAM disk ($UNITO_DEST) into disk_dest.
+        Empties RAM disk on completion. """
+        ram_dest = str(os.getenv("UNITO_DEST"))
+        subdirs = ["figures", "model", "prediction", "Data"]
+
+        for sub in subdirs:
+            src = os.path.join(ram_dest, sub)
+            dst = os.path.join(disk_dest, sub)
+            if os.path.exists(src):
+                os.makedirs(dst, exist_ok=True)
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+
+        for sub in ["figures", "model", "prediction", "Data"]:
+            ram_sub = os.path.join(ram_dest, sub)
+            if os.path.exists(ram_sub):
+                shutil.rmtree(ram_sub)
+                os.makedirs(ram_sub, exist_ok=True)
+
+        for fn in ["gating_strategy.csv", "hyperparameter_tunning.csv"]:
+            if os.path.exists(fn):
+                shutil.copy(fn, os.path.join(disk_dest, fn))
+
+        print(f"Flushed RAMDisk contents from {ram_dest} to {disk_dest}")
 
 class UNITOPipeline:
     """Main pipeline orchestrator"""
@@ -197,35 +385,49 @@ class UNITOPipeline:
         self.converter = FileConverter(config)
         self.gate_processor = GateProcessor(config)
         self.trainer = UNITOTrainer(config)
+        self.hyperparameter_df = pd.DataFrame(columns=['gate',
+                                                       'learning_rate',
+                                                       'batch_size'])
+        self.path2_lastgate_pred_list = [self.config.csv_conversion_dir]
+        self.gate_processor = GateProcessor(config)
+        self.gating_strategy = self.gate_processor.generate_gating_strategy()
+        self.gate_pre_list = list(self.gating_strategy.Parent_Gate)
+        self.gate_pre_list[0] = None
+        self.gate_list = list(self.gating_strategy.Gate)
+        self.x_axis_list = list(self.gating_strategy.X_axis)
+        self.y_axis_list = list(self.gating_strategy.Y_axis)
+
+        for idx in range(1, len(self.gate_list)):
+                parent_gate = self.gate_pre_list[idx]
+                self.path2_lastgate_pred_list.append(f'./prediction/{parent_gate}/')
 
     def run(self,
-            ram_disk: bool = True,
-            downsample: bool = True,
-            max_rows: Optional[int] = None) -> None:
+            downsample: bool = True):
         """Run the complete pipeline"""
-        self.config.__dir_assign__(ram_disk)
-        if ram_disk:
-            RAMDiskManager.mount_ramdisk(True)
+
+        self.config.__dir_assign__()
+        if self.config.ram_disk:
+            ramdisk_manager = RAMDiskManager(self.config)
+            ramdisk_manager.mount_ramdisk(True)
         try:
             # Pytorch settings
             torch.manual_seed(0)
             random.seed(0)
             np.random.seed(0)
-            # Step 1: Convert FCS files
-            # self.converter.convert_all_fcs()
-            # Step 2: Parse gates
-            # self.gate_processor.parse_gates()
-            # Step 3: Generate strategy
-            gating_strategy = self.gate_processor.generate_gating_strategy()
-            gate_pre_list = list(gating_strategy.Parent_Gate)
-            gate_pre_list[0] = None # the first gate does not have parent gate
-            gate_list = list(gating_strategy.Gate)
-            x_axis_list = list(gating_strategy.X_axis)
-            y_axis_list = list(gating_strategy.Y_axis)
 
-            # Step 4: Downsampling
+            # Step 1: Convert FCS files
+            self.converter.convert_all_fcs()
+
+            # Step 2: Parse gates
+            self.gate_processor.parse_gates()
+
+            # Step 3: Find train files, move to train directory
+            self._find_train_csv_files()
+            self._move_gated_csv_files_to_train()
+
+            # Step 4: Downsampling (Optional)
             if downsample:
-                max_rows = self.config.max_rows
+                max_rows = self.config.downsample_max_rows
                 csv_files = [f for f in os.listdir(self.config.csv_conversion_dir)
                              if f.endswith('.csv')]
                 for csv_file in csv_files:
@@ -233,21 +435,66 @@ class UNITOPipeline:
                     self.converter.downsample_csv(csv_path,
                                                   max_rows,
                                                   self.config.csv_conversion_dir)
-            # Step 4: Train all gates
-            self._train_all_gates(gating_strategy)
-            # Step 5: Apply predictions and save results
-            self._finalize_results()
+
+            # Step 5: Add gate labels columns to test csv
+            self._gate_col_added_test_files()
+
+            with cd(self.config.dest):
+                # Step 6: Train all gates
+                self.trainer.train_all_gates(
+                        self.gate_pre_list,
+                        self.gate_list,
+                        self.x_axis_list,
+                        self.y_axis_list,
+                        self.path2_lastgate_pred_list,
+                        self.trainer.csv_train_dir,
+                        self.config.dest,
+                        self.config.save_prediction_path,
+                        self.config.save_figure_path,
+                        self.trainer.hyperparameter_set,
+                        self.hyperparameter_df,
+                        self.config.problematic_gate_hyperparameters,
+                        self.trainer.all_predictions,
+                        self.config.n_worker,
+                        self.config.device)
+
+                # Step 7: Apply predictions and save results
+                self._finalize_results(self.hyperparameter_df,
+                                       self.trainer.all_predictions,
+                                       self.config.csv_conversion_dir)
         finally:
-            if ram_disk:
-                RAMDiskManager.flush_ramdisk_to_disk(str(self.config.disk_dest))
-                RAMDiskManager.cleanup_ramdisk()
+            if self.config.ram_disk:
+                ramdisk_manager.flush_ramdisk_to_disk(str(self.config.disk_dest))
+                ramdisk_manager.cleanup_ramdisk()
 
-    def _train_all_gates(self, gating_strategy: pd.DataFrame) -> None:
-        """Train all gates in sequence"""
-        # Your existing Step 9 logic, but calling self.trainer.train_gate()
+    def _finalize_results(self,
+                          hyperparameter_df,
+                          all_predictions,
+                          csv_conversion_dir) -> None:
+        """Applies predicitons to the test .csv files and saves the hyperparams"""
+        apply_predictions_to_csv(all_predictions, csv_conversion_dir)
+        hyperparameter_df.to_csv('./hyperparameter_tuning.csv')
         pass
 
-    def _finalize_results(self) -> None:
-        """Apply predictions and save final results"""
-        # Your existing Step 10-11 logic
-        pass
+    def _find_train_csv_files(self):
+        """Get list of csv files with gate labels (i.e. gated by user)"""
+        self.training_csv_files = [f for f in os.listdir(self.config.csv_conversion_dir)
+                                   if f.endswith('_with_gate_label.csv')]
+        print(f"Found {len(self.training_csv_files)} files with gate labels")
+        if len(self.training_csv_files) == 0:
+            print("Check if already moved to gated csv files to correct dir")
+
+    def _move_gated_csv_files_to_train(self):
+        """Move gated .csv files to UNITO_csv_conversion/train dir (Disk or RAM Disk)"""
+        for f in self.training_csv_files:
+            source_path = os.path.join(self.config.csv_conversion_dir, f)
+            destination_path = os.path.join(self.trainer.csv_train_dir, f)
+            if os.path.exists(source_path):
+                shutil.move(source_path, destination_path)
+
+    def _gate_col_added_test_files(self):
+        """Add gate labels to the test .csv files as column labels"""
+        add_gate_labels_to_test_files(
+            test_dir=self.config.csv_conversion_dir,
+            train_dir=self.trainer.csv_train_dir
+        )
