@@ -3,16 +3,25 @@ from unito_objects import PipelineConfig, UNITOPipeline
 def main():
 
     config = PipelineConfig(
-        fcs_dir='/path/to/fcs_files/',
-        wsp_path='/path/to/WSP_file.wsp',
-        wsp_files_dir='/path/to/wsp_files_dir/',
-        panel_meta_path='/path/to/panel_metadata.csv',
+        fcs_dir='/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/altered_fcs_files/post_flowai/',
+        wsp_path='/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp',
+        wsp_files_dir='/Users/user/Documents/UNITO_train_wsp/',
+        panel_meta_path='/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/metadata_files/panel_metadata_all_batches.csv',
         ram_disk= True,
-        csv_conversion_dir='/path/to/csv_conversion_dir/',
-        disk_dest='/path/to/disk_dest/',
-        default_hyperparameters=[[1e-3, 128], [1e-4, 256], [5e-4, 512]],
-        problematic_gate_hyperparameters=[[1e-4, 32], [1e-5, 128], [2e-4, 64]],
-        problematic_gate_list=['Cell_gate', 'Cell_gate_2'],
+        csv_conversion_dir='/Users/user/Documents/UNITO_csv_conversion/',
+        disk_dest='/Users/user/Documents/UNITO_train_data',
+        default_hyperparameters=[
+            [1e-3, 128],
+            [1e-4, 256],
+            [5e-4, 512]
+            ],
+        problematic_gate_hyperparameters=[
+            [1e-4, 16],
+            [5e-6, 32],
+            [1e-6, 64],
+            [1e-5, 8]
+            ],
+        problematic_gate_list=['Neutrophils', 'Non-neutrophil leukocytes'],
         downsample_max_rows=200_000,
         n_worker=30,
         device='mps'

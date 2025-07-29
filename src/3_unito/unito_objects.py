@@ -3,7 +3,7 @@ import warnings
 import ssl
 import urllib3
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 # Env settings
@@ -61,17 +61,17 @@ class PipelineConfig:
     # Output paths
     csv_conversion_dir: str
     disk_dest: str
+    # Hyperparameters
+    default_hyperparameters: List[List[float]]
+    problematic_gate_hyperparameters: List[List[float]]
     # Processing settings
     downsample_max_rows: int = 200_000
     device: str = 'mps'
     n_worker: int = 30
     epochs: int = 7
-    problematic_epochs: int = 15
-    # Hyperparameters
-    default_hyperparameters: List = []
-    problematic_gate_hyperparameters: List = []
+    problematic_epochs: int = 18
     #Problematic gates
-    problematic_gate_list: List = []
+    problematic_gate_list: List = field(default_factory=list)
 
     def __dir_assign__(self):
         if self.ram_disk:
@@ -405,10 +405,10 @@ class UNITOPipeline:
             downsample: bool = True):
         """Run the complete pipeline"""
 
-        self.config.__dir_assign__()
         if self.config.ram_disk:
             ramdisk_manager = RAMDiskManager(self.config)
             ramdisk_manager.mount_ramdisk(True)
+        self.config.__dir_assign__()
         try:
             # Pytorch settings
             torch.manual_seed(0)
