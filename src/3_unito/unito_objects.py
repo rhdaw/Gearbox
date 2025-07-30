@@ -18,7 +18,6 @@ warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning) 
 
 # Standard Imports
-from pathlib import Path
 import concurrent.futures
 import random
 import shutil
@@ -76,11 +75,11 @@ class PipelineConfig:
     def __dir_assign__(self):
         if self.ram_disk:
             self.dest = os.getenv("UNITO_DEST")
-            save_data_img_path   = f"{self.dest}/Data/"
-            save_figure_path     = f"{self.dest}/figures/"
-            save_model_path      = f"{self.dest}/model/"
-            save_prediction_path = f"{self.dest}/prediction/"
-            downsample_path      = f"{self.dest}/downsample/"
+            self.save_data_img_path   = f"{self.dest}/Data/"
+            self.save_figure_path     = f"{self.dest}/figures/"
+            self.save_model_path      = f"{self.dest}/model/"
+            self.save_prediction_path = f"{self.dest}/prediction/"
+            self.downsample_path      = f"{self.dest}/downsample/"
         else:
             self.dest = self.disk_dest
             self.save_data_img_path = f"{self.dest}/Data/"
@@ -90,11 +89,11 @@ class PipelineConfig:
             self.downsample_path = f"{self.dest}/downsample/"
 
         for path in [
-            save_data_img_path,
-            save_figure_path,
-            save_model_path,
-            save_prediction_path,
-            downsample_path
+            self.save_data_img_path,
+            self.save_figure_path,
+            self.save_model_path,
+            self.save_prediction_path,
+            self.downsample_path
         ]:
             if not os.path.exists(path):
                 os.makedirs(path, exist_ok=True)
@@ -168,7 +167,9 @@ class UNITOTrainer:
     """Handles UNITO training and prediction"""
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.all_predictions ={}
+        self.hyperparameter_set = self.config.default_hyperparameters
+        self.epochs = self.config.epochs
+        self.all_predictions = {}
         self.csv_train_dir = os.path.join(self.config.csv_conversion_dir, 'train')
 
         if not os.path.exists(self.csv_train_dir):
@@ -184,7 +185,6 @@ class UNITOTrainer:
                         dest,
                         save_prediction_path,
                         save_figure_path,
-                        hyperparameter_set,
                         hyperparameter_df,
                         problematic_gate_hyperparameters,
                         all_predictions,
@@ -202,15 +202,12 @@ class UNITOTrainer:
                                            path2_lastgate_pred_list)):
 
             # Granular hyperparameter settings for problematic gates
-            if self.config.problematic_gate_list:
-                for g in self.config.problematic_gate_list:
-                    if g in gate.lower():
-                        self.hyperparameter_set = problematic_gate_hyperparameters
-                        epoches = self.config.problematic_epochs
-                        print(f"Using specialized hyperparameters for {gate}")
-                    else:
-                        self.hyperparameter_set = hyperparameter_set
-                        print(f"Using default hyperparameters for {gate}")
+            if self.config.problematic_gate_list and any(g in gate for g in self.config.problematic_gate_list):
+                self.hyperparameter_set = problematic_gate_hyperparameters
+                self.epochs = self.config.problematic_epochs
+                print(f"Using specialized hyperparameters and epochs for {gate}")
+            else:
+                print(f"Using default hyperparameters and epochs for {gate}")
 
             print(f"start UNITO for {gate}")
             # 9a. preprocess training data
@@ -226,13 +223,13 @@ class UNITOTrainer:
 
             # 9b. train
             best_lr, best_bs = tune(gate,
-                                    hyperparameter_set,
+                                    self.hyperparameter_set,
                                     device,
-                                    epoches,
+                                    self.epochs,
                                     n_worker,
                                     dest)
             hyperparameter_df.loc[len(hyperparameter_df)] = [gate, best_lr, best_bs]
-            train(gate, best_lr, device, best_bs, epoches, n_worker, dest)
+            train(gate, best_lr, device, best_bs, self.epochs, n_worker, dest)
 
             # 9c. preprocess prediction data
             print(f"Start prediction for {gate}")
@@ -240,7 +237,7 @@ class UNITOTrainer:
                 processed_files_list = [f for f in os.listdir(path_raw)
                                             if f.endswith('.csv')
                                             and not f.endswith('_with_gate_label.csv')]
-            print(f"Captured file processing order: {len(processed_files_list)} files")
+            print(f"Captured file processing order: {processed_files_list}")
             process_table(x_axis,
                           y_axis,
                           gate_pre,
@@ -416,10 +413,10 @@ class UNITOPipeline:
             np.random.seed(0)
 
             # Step 1: Convert FCS files
-            self.converter.convert_all_fcs()
+            #self.converter.convert_all_fcs()
 
             # Step 2: Parse gates
-            self.gate_processor.parse_gates()
+            #self.gate_processor.parse_gates()
 
             # Step 3: Find train files, move to train directory
             self._find_train_csv_files()
@@ -428,13 +425,13 @@ class UNITOPipeline:
             # Step 4: Downsampling (Optional)
             if downsample:
                 max_rows = self.config.downsample_max_rows
-                csv_files = [f for f in os.listdir(self.config.csv_conversion_dir)
+                csv_files = [f for f in os.listdir(self.trainer.csv_train_dir)
                              if f.endswith('.csv')]
                 for csv_file in csv_files:
-                    csv_path = os.path.join(self.config.csv_conversion_dir, csv_file)
+                    csv_path = os.path.join(self.trainer.csv_train_dir, csv_file)
                     self.converter.downsample_csv(csv_path,
                                                   max_rows,
-                                                  self.config.csv_conversion_dir)
+                                                  self.trainer.csv_train_dir)
 
             # Step 5: Add gate labels columns to test csv
             self._gate_col_added_test_files()
@@ -451,7 +448,6 @@ class UNITOPipeline:
                         self.config.dest,
                         self.config.save_prediction_path,
                         self.config.save_figure_path,
-                        self.trainer.hyperparameter_set,
                         self.hyperparameter_df,
                         self.config.problematic_gate_hyperparameters,
                         self.trainer.all_predictions,
