@@ -1,4 +1,4 @@
-### Gearbox
+## Gearbox
  
 A pipeline for .fcs file QC, Batch Correction, ML-based gating, and data output.
 Designed to be used on a local HPC, to perform analysis of 100s-1000s of .fcs files in one go.
@@ -6,18 +6,20 @@ Works well with both standard and spectral flow cytometry data. The pipeline was
 
 ### Relies on the following major packages:
 1) flowAI (R)
-2) CyCombine (Py)
+2) CyCombine (R)
 3) UNITO (Py)
 
-For required py packages, please see the pyproject.toml file.
+Ensure R is installed, required packages for flowAI and CyCombine are listed within the respective main.R files.
+For required py modules, please see the pyproject.toml or requirements.txt file.
 
 ### For installation of the correct UNITO version, install to your .venv via:
 Using pip:
 >pip install git+https://github.com/happyhypocrite/UNITO
+
 Using uv:
 >uv add git+https://github.com/happyhypocrite/UNITO
 
-Multiple functions and modules are designed to help transition files between pipeline steps. Mostly, these helper functions are built around UNITO to get it working correctly with little input. Details on these helper functions can be found in the documentation below (See 'UNITO Pipeline Documentation' below). Functions specific to flowAI, CyCombine, and UNITO can be found in their respective repos.
+Multiple class methods and modules are designed to help transition files between pipeline steps in unito_pipeline.py. Mostly, these class methods are built around UNITO to get it working correctly with little input. Details on how to interact with these class methods can be found in the documentation below (See 'UNITO Pipeline Documentation'). Class method details can be found in their Docstrings. Details on functions specific to flowAI, CyCombine, and UNITO can be found in their respective repos.
 
 ### Additional Requirements:
 - Metadata and Paneldata .csv files according to Cycombine's documented requirements (https://github.com/biosurf/cyCombine).
@@ -59,6 +61,7 @@ uv pip install -r pyproject.toml
 
 ### Configuration
 All pipeline settings are managed via the PipelineConfig object in main.py.
+
 #### Example:
 ```Python
 config = PipelineConfig(
@@ -86,6 +89,11 @@ config = PipelineConfig(
     device='mps'
 )
 ```
+#### Config tips
+> 'Problematic gates' are defined as those that need different epoch / hyperparameter settings because of poor ML training metrics when using default hyperparameters.
+> Downsampling can help significantly with under/over training issues - each event is considered a sample.
+> Adjust n_worker to your machine's capabilities.
+
 ### Usage
 Run the pipeline from the command line:
 ``` bash 
@@ -99,21 +107,22 @@ python src/3_unito/main.py
 - Print statements for logs and error reports
 
 ### Troubleshooting
-- RAM disk errors: Ensure macOS used and sufficient memory. Check environment variable UNITO_DEST.
+- RAM disk errors: Ensure macOS used and sufficient memory. Consider ram_disk = False (Warning: slower runtime). Check environment variable UNITO_DEST.
 - Path errors: Verify all input/output paths exist and are accessible.
 - Performance: Adjust n_worker and batch sizes for your hardware.
 - Poor ML performance: adjust downsample size, epochs and hyperparameters in PipelineConfig.
-- Slow runtime: adjust to cuda if applicable, enable ram_disk.
+- Slow runtime: adjust to cuda if applicable (default is mps with cpu backup), enable ram_disk.
 
 ### Contributing
 - Fork the repo, create a feature branch, and submit a pull request.
 - Please add tests and update documentation for new features.
 
 ### License
-Apache license - see LICENSE
+Apache license - see LICENSE file
 
 ### Example Workflow
 1) Place your FCS files in the specified directory.
-2) Update main.py with your configuration.
-3) Run the pipeline.
-4) Review output metrics and processed files.
+2) Place your WSP file, alongside gated training FCS files, in the specified directory.
+3) Update main.py with your configuration.
+4) Run the pipeline.
+5) Review output metrics and processed files.
