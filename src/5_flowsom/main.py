@@ -1,60 +1,52 @@
-import flowsom as fs
-import os
-import flowkit as fk
+from flowsom_objects import PipelineConfig, FlowSOMPipeline
 
-# Directories
-disk_dest = '/Users/user/Documents/UNITO_train_data'
-save_fcs_with_gates_path = f'{disk_dest}/fcs_with_hierarchical_unito_gates'
-fcs_files = [f for f in os.listdir(save_fcs_with_gates_path) if f.endswith('.fcs')]
+def main():
 
-def filter_out_cell(fcs_dir, cell_gate):
-    fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
-    new_filepath_list = []
+    config = PipelineConfig(
+    unitogated_csv_dir = '/Users/user/Documents/UNITO_csv_conversion', # Where the post UNITO csv files are located
+    filtered_fcs_path = '/Users/user/Documents/UNITO_csv_conversion/flowsomtest', # Where you want the filtered fcs files to go
+    filter_out = ['Neutrophils'],
+    marker_list = [
+        "CD45",
+        "CD33",
+        "CD4",
+        "CD16",
+        "CD14",
+        "CX3CR1",
+        "CD27",
+        "CCR6",
+        "CD62L",
+        "CCR2",
+        "CD25",
+        "CD8",
+        "CD32",
+        "CD86",
+        "CD64",
+        "TCRGD",
+        "CD15",
+        "CD28",
+        "CD36",
+        "CCR5",
+        "CD45RA",
+        "CD163",
+        "FCE1RA",
+        "CD56",
+        "CD123",
+        "CD19",
+        "CCR7",
+        "CD3",
+        "HLADR"
+    ], # List of the markers in your csv files that you want to use for FlowSOM clustering
+    cluster_num = 30, # Number of clusters created
+    seed = 42
+    )
 
-    for f in fcs_files:
-        sample_path = os.path.join(fcs_dir, f)
-        sample = fk.Sample(sample_path)
-        sample_events_df = sample.as_dataframe()
-        filtered_df = sample_events_df[sample_events_df[cell_gate] != 1]
-        
-        # Create new filename with dropped cell type
-        base_name = os.path.splitext(f)[0]
-        cell_type = cell_gate.replace('UNITO_', '')
-        new_filename = f"{base_name}_dropped_{cell_type}.fcs"
-        new_filepath = os.path.join(fcs_dir, new_filename)
-        new_filepath_list.append(new_filename)
+    # Run pipeline
+    pipeline = FlowSOMPipeline(config)
+    fsom = pipeline.run()
+    pipeline.plot_flowSOM(fsom)
 
-        # Create new sample with filtered data and save
-        filtered_sample = fk.Sample(filtered_df, sample_id=base_name)
-        filtered_sample.export(new_filepath, source='dataframe')
-        print(f"Removed {cell_type} from .fcs file. Saved filtered file: {new_filename}") 
+if __name__ == '__main__':
+    main()
 
-    return new_filepath_list
 
-def get_unito_col_idx(fcs_dir):
-    fcs_files = [f for f in os.listdir(fcs_dir) if f.endswith('.fcs')]
-    sample_path = os.path.join(fcs_dir, fcs_files[0])
-    sample = fk.Sample(sample_path)
-    sample_events_df = sample.as_dataframe()
-    col_names = sample_events_df.columns[sample_events_df.columns.str.contains('UNITO_')].tolist()
-    col_indices = [sample_events_df.columns.get_loc(col) for col in col_names]
-
-    return col_indices
-
-# Get UNITO column indicies
-col_indices = get_unito_col_idx(save_fcs_with_gates_path)
-
-# Filter by cell type if you want here (i.e. everything that isn't a Neutrophil)
-filtered_fcs_path_list = filter_out_cell(save_fcs_with_gates_path, 'UNITO_Neutrophils')
-
-# Load the FCS file
-ff = fs.pp.aggregate_flowframes(filtered_fcs_path_list)
-
-# Run the FlowSOM algorithm
-fsom = fs.FlowSOM(
-    ff, cols_to_use = col_indices, xdim=10, ydim=10, n_clusters=10, seed=42
-)
-
-# Plot the FlowSOM results
-p = fs.pl.plot_stars(fsom, background_values=fsom.get_cluster_data().obs.metaclustering)
-p.show()
