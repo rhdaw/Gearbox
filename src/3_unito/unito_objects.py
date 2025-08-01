@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 # Env settings
-os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 os.environ['ALBUMENTATIONS_DISABLE_VERSION_CHECK'] = '1'
 os.environ['TORCH_COMPILE_DISABLE'] = '1'
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -15,7 +15,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
 warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
-warnings.filterwarnings('ignore', category=FutureWarning) 
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 # Standard Imports
 import concurrent.futures
@@ -59,6 +59,7 @@ class PipelineConfig:
     ram_disk: bool
     # Output paths
     csv_conversion_dir: str
+    csv_conversion_dir_metadir: str
     disk_dest: str
     # Hyperparameters
     default_hyperparameters: List[List[float]]
@@ -123,11 +124,17 @@ class FileConverter:
         """ Generate .csv of fcs_file required for UNITO processing """
         fcs_filename = os.path.basename(fcs_file)
         meta, data = fcsparser.parse(fcs_file, reformat_meta=True)
+        # Save Data
         df = pd.DataFrame(data)
         csv_filename = fcs_filename.replace('.fcs', '.csv')
         df_output = os.path.join(self.config.csv_conversion_dir, csv_filename)
         df.to_csv(df_output, index=False)
         print(f'{fcs_filename} converted to csv')
+        # Save Meta
+        meta_filename = fcs_filename.replace('.fcs', '_metadata.csv')
+        meta_output = os.path.join(self.config.csv_conversion_dir_metadir, meta_filename)
+        meta_df = pd.DataFrame(list(meta.items()), columns=['key', 'value'])
+        meta_df.to_csv(meta_output, index=False)
 
     def downsample_csv(self, csv_file: str, max_rows: int, out_dir: str) -> str:
         """Downsample a CSV file to max_rows and save to out_dir"""
@@ -202,7 +209,8 @@ class UNITOTrainer:
                                            path2_lastgate_pred_list)):
 
             # Granular hyperparameter settings for problematic gates
-            if self.config.problematic_gate_list and any(g in gate for g in self.config.problematic_gate_list):
+            if self.config.problematic_gate_list and any(g in gate for g in
+                                                         self.config.problematic_gate_list):
                 self.hyperparameter_set = problematic_gate_hyperparameters
                 self.epochs = self.config.problematic_epochs
                 print(f"Using specialized hyperparameters and epochs for {gate}")

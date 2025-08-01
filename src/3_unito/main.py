@@ -9,6 +9,7 @@ def main():
         panel_meta_path='/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/metadata_files/panel_metadata_all_batches.csv',
         ram_disk= True,
         csv_conversion_dir='/Users/user/Documents/UNITO_csv_conversion/',
+        csv_conversion_dir_metadir='/Users/user/Documents/UNITO_csv_conversion/metadata',
         disk_dest='/Users/user/Documents/UNITO_train_data',
         default_hyperparameters=[
             [1e-3, 128],
