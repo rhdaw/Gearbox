@@ -4,6 +4,7 @@ def main():
 
     config = PipelineConfig(
     unitogated_csv_dir = '/Users/user/Documents/UNITO_csv_conversion', # Where the post UNITO csv files are located
+    csv_dir_metadir = '/Users/user/Documents/UNITO_csv_conversion/metadata', # The same directory as csv_conversion_dir_metadir in unito's main.py()
     filtered_fcs_path = '/Users/user/Documents/UNITO_csv_conversion/flowsomtest', # Where you want the filtered fcs files to go
     filter_out = ['Neutrophils'],
     marker_list = [

@@ -94,7 +94,8 @@ class PipelineConfig:
             self.save_figure_path,
             self.save_model_path,
             self.save_prediction_path,
-            self.downsample_path
+            self.downsample_path,
+            self.csv_conversion_dir_metadir
         ]:
             if not os.path.exists(path):
                 os.makedirs(path, exist_ok=True)
@@ -123,7 +124,7 @@ class FileConverter:
     def _convert_fcs_to_csv(self, fcs_file: str, output_dir: str) -> None:
         """ Generate .csv of fcs_file required for UNITO processing """
         fcs_filename = os.path.basename(fcs_file)
-        meta, data = fcsparser.parse(fcs_file, reformat_meta=True)
+        m, data = fcsparser.parse(fcs_file, reformat_meta=True)
         # Save Data
         df = pd.DataFrame(data)
         csv_filename = fcs_filename.replace('.fcs', '.csv')
@@ -131,10 +132,11 @@ class FileConverter:
         df.to_csv(df_output, index=False)
         print(f'{fcs_filename} converted to csv')
         # Save Meta
+        meta = fcsparser.parse(fcs_file, meta_data_only=True, reformat_meta=True)
+        channels_df = meta['_channels_']
         meta_filename = fcs_filename.replace('.fcs', '_metadata.csv')
         meta_output = os.path.join(self.config.csv_conversion_dir_metadir, meta_filename)
-        meta_df = pd.DataFrame(list(meta.items()), columns=['key', 'value'])
-        meta_df.to_csv(meta_output, index=False)
+        channels_df.to_csv(meta_output, index=False)
 
     def downsample_csv(self, csv_file: str, max_rows: int, out_dir: str) -> str:
         """Downsample a CSV file to max_rows and save to out_dir"""

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List
 import pandas as pd
 import concurrent.futures
+import datetime
 
 @dataclass
 class PipelineConfig:
@@ -21,6 +22,14 @@ class PipelineConfig:
     filter_out: List = field(default_factory=list)
     # Marker list for flowSOM
     marker_list: List = field(default_factory=list)
+
+    def __dir_assign__(self):
+        for path in [
+                self.csv_dir_metadir,
+                self.filtered_fcs_path,
+            ]:
+                if not os.path.exists(path):
+                    os.makedirs(path, exist_ok=True)
 
 class FCSFileBuilder:
     def __init__(self, config: PipelineConfig):
@@ -42,30 +51,24 @@ class FCSFileBuilder:
 
         """
         data_df = pd.read_csv(data_csv_path)
-        metadata_df = pd.read_csv(metadata_csv_path)
         data_array = data_df.values
         flattened_data = data_array.flatten().tolist()
-
-        channel_names = []
-        if '$PnN' in metadata_df.columns:
-            channel_names = metadata_df['$PnN'].tolist()
-        else:
-            print('Error - $PnN not found in metadata file')
+        metadata_df = pd.read_csv(metadata_csv_path, index_col='Channel Number')
+        channel_names = metadata_df['$PnN'].tolist()
 
         metadata_dict = {
             '$TOT': str(data_array.shape[0]),      # Total events
             '$PAR': str(data_array.shape[1]),      # Number of parameters
-            '$MODE': 'L',                           # List mode
-            '$DATATYPE': 'F',                       # Float data type
+            '$MODE': 'L',                          # List mode
+            '$DATATYPE': 'F',                      # Float data type
             '$BYTEORD': '1,2,3,4',                 # Byte order
             '$SYS': 'flowio Python CSV Import',    # System
-            '$DATE': '01-AUG-2025',                # Date
+            '$DATE': datetime.date.today().strftime('%d-%b-%Y'),        # Date
             '$BTIM': '12:00:00',                   # Begin time
             '$ETIM': '12:01:00',                   # End time
         }
 
         for i, (idx, row) in enumerate(metadata_df.iterrows(), 1):
-            # Map your CSV columns to FCS metadata fields
             if '$PnB' in metadata_df.columns:
                 metadata_dict[f'$P{i}B'] = str(row['$PnB'])
             if '$PnG' in metadata_df.columns:
@@ -77,7 +80,6 @@ class FCSFileBuilder:
             if '$PnV' in metadata_df.columns:
                 metadata_dict[f'$P{i}V'] = str(row['$PnV'])
 
-        print("Channel mapping:")
         for i, (pnn) in enumerate((channel_names), 1):
             print(f" P{i}N: {pnn}")
 
@@ -94,12 +96,20 @@ class FCSFileBuilder:
             print(f"Error creating FCS file: {e}")
         print("FCS file created successfully")
 
+        return output_fcs_path
+
     def _get_base_name(self, filepath):
-        """Extract meaningful part of filename for matching"""
+        """Extract meaningful part of filenamne for csv and meta matching
+
+        Parameters:
+        - filepath: filepath of file to extract filename from.
+
+        """
         return os.path.splitext(os.path.basename(filepath)
                                 )[0].replace('_data', '').replace('_meta', '')
 
     def multi_fcs_create(self):
+        """ Process pool executor for _create_fcs_from_csvs """
         meta_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
         matching_pairs = [
             (f, meta_dict[self._get_base_name(f)])
@@ -108,10 +118,11 @@ class FCSFileBuilder:
         ]
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._create_fcs_from_csvs,
-                                       f,
-                                       m,
-                                       self.config.filtered_fcs_path)
+            results = [executor.submit(self._create_fcs_from_csvs, 
+                                       os.path.join(self.config.unitogated_csv_dir, f),
+                                       os.path.join(self.config.csv_dir_metadir, m),
+                                       os.path.join(self.config.filtered_fcs_path,
+                                                    f.replace('_data.csv', '.fcs')))
                         for f, m in matching_pairs]
             self.new_filepath_list = []
             for future in concurrent.futures.as_completed(results):
@@ -130,7 +141,12 @@ class DataFilterConverter:
 
     def _filter_out_cell(self, f):
         """ Filters out specified cell types from config.filter_out,
-            saves .csv as .fcs for flowSOM """
+            saves .csv as .fcs for flowSOM
+
+        Parameters:
+        - f: file to be filtered
+
+            """
         sample_path = os.path.join(self.config.unitogated_csv_dir, f)
         sample_events_df = pd.read_csv(sample_path)
         filtered_df = sample_events_df.copy()
@@ -152,6 +168,7 @@ class DataFilterConverter:
         return new_filepath
 
     def multi_filter_cell(self):
+        """ Process pool executor for _filter_out_cell """
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(self._filter_out_cell, f)
                         for f in self.csv_files]
@@ -177,11 +194,18 @@ class FlowSOMProcessor:
         self.marker_col_indices = [sample_events_df.columns.get_loc(col)
                               for col in self.config.marker_list]
 
-    def run_flowSOM(self):
-        """ """
+    def run_flowsom(self):
+        """ Runs FlowSOM module automatically using self.config
+        and self.datafilter settings
+
+        Returns:
+        - FlowSOM object
+
+        """
         ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list, c_total=100000000)
         fsom = fs.FlowSOM(
-            ff, cols_to_use = self.marker_col_indices,
+            ff,
+            cols_to_use = self.marker_col_indices,
             xdim=10,
             ydim=10,
             n_clusters=self.config.cluster_num,
@@ -191,15 +215,18 @@ class FlowSOMProcessor:
         return fsom
 
 class FlowSOMPipeline:
+    """ User facing object to run FlowSOM on csv files """
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.datafilter = DataFilterConverter(config)
         self.processor = FlowSOMProcessor(config, self.datafilter)
 
     def run(self):
+        self.config.__dir_assign__()
         self.processor.get_col_idx()
+        print('.fcs files will be generated from you .csv files for FlowSOM analysis')
         self.datafilter.multi_filter_cell()
-        fsom = self.processor.run_flowSOM()
+        fsom = self.processor.run_flowsom()
         return fsom
 
     def plot_flowSOM(self, fsom):
