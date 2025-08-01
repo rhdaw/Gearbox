@@ -6,12 +6,14 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "albumentations>=2.0.8",
+    "anndata==0.10.8",
     "dataset>=1.6.2",
     "fastparquet>=2024.11.0",
     "fcsparser>=0.2.8",
     "fcswrite>=0.6.2",
     "flowkit>=1.2.3",
     "flowsom>=0.2.1",
+    "mudata>=0.2.4",
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
     "pytometry>=0.1.4",

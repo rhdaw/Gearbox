@@ -12,13 +12,13 @@ class PipelineConfig:
     # Input paths
     unitogated_csv_dir: str
     filtered_fcs_path: str
-    # Cell filter
-    filter_out: List = field(default_factory=list)
-    # Marker list for flowSOM
-    marker_list: List = field(default_factory = List)
     # FlowSOM settings
     cluster_num: int
     seed: int
+    # Cell filter
+    filter_out: List = field(default_factory=list)
+    # Marker list for flowSOM
+    marker_list: List = field(default_factory=list)
 
 class DataFilterConverter:
     """ Filters and Converts .csv flow cytometry files to .fcs files."""
@@ -42,8 +42,10 @@ class DataFilterConverter:
         new_filepath = os.path.join(self.config.filtered_fcs_path, new_filename)
 
         # Create new sample with filtered data and save
-        filtered_sample = fk.Sample(filtered_df, sample_id=base_name)
-        filtered_sample.export(new_filepath, source='dataframe')
+        filtered_sample = fk.Sample(filtered_df,
+                                    sample_id=base_name,
+                                    parameters=parameters)
+        filtered_sample.export(new_filepath, source='orig')
         print(f"Removed {self.config.filter_out} from .csv file.")
         print(f"Saved filtered file now .fcs: {new_filename}")
 
@@ -63,9 +65,9 @@ class DataFilterConverter:
 
 class FlowSOMProcessor:
     """ """
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig, datafilter: DataFilterConverter):
         self.config = config
-        self.datafilter = DataFilterConverter(config)
+        self.datafilter = datafilter
 
     def get_col_idx(self):
         """ Gets col idx from csv for use in flowSOM """
@@ -75,15 +77,15 @@ class FlowSOMProcessor:
         self.marker_col_indices = [sample_events_df.columns.get_loc(col)
                               for col in self.config.marker_list]
 
-    def run_flowSOM(self, clusters, seed):
+    def run_flowSOM(self):
         """ """
-        ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list)
+        ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list, c_total=100000000)
         fsom = fs.FlowSOM(
             ff, cols_to_use = self.marker_col_indices,
             xdim=10,
             ydim=10,
-            n_clusters=clusters,
-            seed=seed
+            n_clusters=self.config.cluster_num,
+            seed=self.config.seed
         )
 
         return fsom
@@ -92,12 +94,12 @@ class FlowSOMPipeline:
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.datafilter = DataFilterConverter(config)
-        self.processor = FlowSOMProcessor(config)
+        self.processor = FlowSOMProcessor(config, self.datafilter)
 
     def run(self):
         self.processor.get_col_idx()
         self.datafilter.multi_filter_cell()
-        fsom = self.processor.run_flowSOM(self.config.cluster_num, self.config.seed)
+        fsom = self.processor.run_flowSOM()
         return fsom
 
     def plot_flowSOM(self, fsom):
