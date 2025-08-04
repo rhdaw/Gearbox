@@ -123,20 +123,24 @@ class FileConverter:
 
     def _convert_fcs_to_csv(self, fcs_file: str, output_dir: str) -> None:
         """ Generate .csv of fcs_file required for UNITO processing """
-        fcs_filename = os.path.basename(fcs_file)
-        m, data = fcsparser.parse(fcs_file, reformat_meta=True)
-        # Save Data
-        df = pd.DataFrame(data)
-        csv_filename = fcs_filename.replace('.fcs', '.csv')
-        df_output = os.path.join(self.config.csv_conversion_dir, csv_filename)
-        df.to_csv(df_output, index=False)
-        print(f'{fcs_filename} converted to csv')
-        # Save Meta
-        meta = fcsparser.parse(fcs_file, meta_data_only=True, reformat_meta=True)
-        channels_df = meta['_channels_']
-        meta_filename = fcs_filename.replace('.fcs', '_metadata.csv')
-        meta_output = os.path.join(self.config.csv_conversion_dir_metadir, meta_filename)
-        channels_df.to_csv(meta_output, index=False)
+        try:
+            fcs_filename = os.path.basename(fcs_file)
+            m, data = fcsparser.parse(fcs_file, reformat_meta=True)
+            # Save Data
+            df = pd.DataFrame(data)
+            csv_filename = fcs_filename.replace('.fcs', '.csv')
+            df_output = os.path.join(self.config.csv_conversion_dir, csv_filename)
+            df.to_csv(df_output, index=False)
+            print(f'{fcs_filename} converted to csv')
+            # Save Meta
+            meta_df = pd.DataFrame(list(m.items()), columns=['key', 'value'])
+            meta_filename = fcs_filename.replace('.fcs', '_metadata.csv')
+            meta_output = os.path.join(self.config.csv_conversion_dir_metadir,
+                                        meta_filename)
+            meta_df.to_csv(meta_output, index=False)
+            print(f'Metadata saved for {meta_filename}')
+        except Exception as e:
+            print(f"Error saving data, metadata for {fcs_filename}: {e}")
 
     def downsample_csv(self, csv_file: str, max_rows: int, out_dir: str) -> str:
         """Downsample a CSV file to max_rows and save to out_dir"""
@@ -423,10 +427,10 @@ class UNITOPipeline:
             np.random.seed(0)
 
             # Step 1: Convert FCS files
-            #self.converter.convert_all_fcs()
+            self.converter.convert_all_fcs()
 
             # Step 2: Parse gates
-            #self.gate_processor.parse_gates()
+            self.gate_processor.parse_gates()
 
             # Step 3: Find train files, move to train directory
             self._find_train_csv_files()

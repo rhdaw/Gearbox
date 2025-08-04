@@ -3,7 +3,7 @@ from unito_objects import PipelineConfig, UNITOPipeline
 def main():
 
     config = PipelineConfig(
-        fcs_dir='/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/altered_fcs_files/post_flowai/',
+        fcs_dir='/Users/user/Documents/UNITO_csv_conversion/fcs_dir_testing/',
         wsp_path='/Users/user/Documents/UNITO_train_wsp/WSP_22052025.wsp',
         wsp_files_dir='/Users/user/Documents/UNITO_train_wsp/',
         panel_meta_path='/Volumes/grainger/Common/stroke_impact_smart_tube/computational_outputs/fcs_files/metadata_files/panel_metadata_all_batches.csv',
@@ -12,6 +12,7 @@ def main():
         csv_conversion_dir_metadir='/Users/user/Documents/UNITO_csv_conversion/metadata',
         disk_dest='/Users/user/Documents/UNITO_train_data',
         default_hyperparameters=[
+            [1e-3, 64],
             [1e-3, 128],
             [1e-4, 256],
             [5e-4, 512]

@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from typing import List
 import pandas as pd
 import concurrent.futures
-import datetime
+import ast
+import io
+import re
 
 @dataclass
 class PipelineConfig:
@@ -14,7 +16,7 @@ class PipelineConfig:
     # Input paths
     unitogated_csv_dir: str
     csv_dir_metadir: str
-    filtered_fcs_path: str
+    filtered_csv_path: str
     # FlowSOM settings
     cluster_num: int
     seed: int
@@ -26,111 +28,10 @@ class PipelineConfig:
     def __dir_assign__(self):
         for path in [
                 self.csv_dir_metadir,
-                self.filtered_fcs_path,
+                self.filtered_csv_path,
             ]:
                 if not os.path.exists(path):
                     os.makedirs(path, exist_ok=True)
-
-class FCSFileBuilder:
-    def __init__(self, config: PipelineConfig):
-        self.config = config
-        self.csv_files = [f for f in os.listdir(config.unitogated_csv_dir) if
-                          f.endswith('_data.csv')
-                          and not f.endswith('_metadata.csv')]
-        self.meta_csv_files =  [f for f in os.listdir(config.csv_dir_metadir) if
-                          f.endswith('_metadata.csv')]
-
-    def _create_fcs_from_csvs(self, data_csv_path, metadata_csv_path, output_fcs_path):
-        """
-        Create FCS file from separate data and metadata CSV files using flowio
-
-        Parameters:
-        - data_csv_path: path to CSV with flow cytometry event data
-        - metadata_csv_path: path to CSV with channel metadata
-        - output_fcs_path: path for output FCS file
-
-        """
-        data_df = pd.read_csv(data_csv_path)
-        data_array = data_df.values
-        flattened_data = data_array.flatten().tolist()
-        metadata_df = pd.read_csv(metadata_csv_path, index_col='Channel Number')
-        channel_names = metadata_df['$PnN'].tolist()
-
-        metadata_dict = {
-            '$TOT': str(data_array.shape[0]),      # Total events
-            '$PAR': str(data_array.shape[1]),      # Number of parameters
-            '$MODE': 'L',                          # List mode
-            '$DATATYPE': 'F',                      # Float data type
-            '$BYTEORD': '1,2,3,4',                 # Byte order
-            '$SYS': 'flowio Python CSV Import',    # System
-            '$DATE': datetime.date.today().strftime('%d-%b-%Y'),        # Date
-            '$BTIM': '12:00:00',                   # Begin time
-            '$ETIM': '12:01:00',                   # End time
-        }
-
-        for i, (idx, row) in enumerate(metadata_df.iterrows(), 1):
-            if '$PnB' in metadata_df.columns:
-                metadata_dict[f'$P{i}B'] = str(row['$PnB'])
-            if '$PnG' in metadata_df.columns:
-                metadata_dict[f'$P{i}G'] = str(row['$PnG'])
-            if '$PnE' in metadata_df.columns:
-                metadata_dict[f'$P{i}E'] = str(row['$PnE'])
-            if '$PnR' in metadata_df.columns:
-                metadata_dict[f'$P{i}R'] = str(row['$PnR'])
-            if '$PnV' in metadata_df.columns:
-                metadata_dict[f'$P{i}V'] = str(row['$PnV'])
-
-        for i, (pnn) in enumerate((channel_names), 1):
-            print(f" P{i}N: {pnn}")
-
-        print(f"\nCreating FCS file: {output_fcs_path}")
-        try:
-            with open(output_fcs_path, 'wb') as fh:
-                flowio.create_fcs(
-                    file_handle=fh,
-                    event_data=flattened_data,
-                    channel_names=channel_names,
-                    metadata_dict=metadata_dict
-                )
-        except Exception as e:
-            print(f"Error creating FCS file: {e}")
-        print("FCS file created successfully")
-
-        return output_fcs_path
-
-    def _get_base_name(self, filepath):
-        """Extract meaningful part of filenamne for csv and meta matching
-
-        Parameters:
-        - filepath: filepath of file to extract filename from.
-
-        """
-        return os.path.splitext(os.path.basename(filepath)
-                                )[0].replace('_data', '').replace('_meta', '')
-
-    def multi_fcs_create(self):
-        """ Process pool executor for _create_fcs_from_csvs """
-        meta_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
-        matching_pairs = [
-            (f, meta_dict[self._get_base_name(f)])
-            for f in self.csv_files
-            if self._get_base_name(f) in meta_dict
-        ]
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._create_fcs_from_csvs, 
-                                       os.path.join(self.config.unitogated_csv_dir, f),
-                                       os.path.join(self.config.csv_dir_metadir, m),
-                                       os.path.join(self.config.filtered_fcs_path,
-                                                    f.replace('_data.csv', '.fcs')))
-                        for f, m in matching_pairs]
-            self.new_filepath_list = []
-            for future in concurrent.futures.as_completed(results):
-                try:
-                    result = future.result()
-                    self.new_filepath_list.append(result)
-                except Exception as e:
-                    print(f"Error processing file: {e}")
 
 class DataFilterConverter:
     """ Filters and Converts .csv flow cytometry files to .fcs files."""
@@ -155,15 +56,11 @@ class DataFilterConverter:
 
         # Create new filename with dropped cell type(s)
         base_name = os.path.splitext(f)[0]
-        new_filename = f"{base_name}_dropped.fcs"
-        new_filepath = os.path.join(self.config.filtered_fcs_path, new_filename)
+        new_filename = f"{base_name}_dropped.csv"
+        new_filepath = os.path.join(self.config.filtered_csv_path, new_filename)
 
         # Create new sample with filtered data and save
-        filtered_sample = fk.Sample(filtered_df,
-                                    sample_id=base_name,)
-        filtered_sample.export(new_filepath, source='orig')
-        print(f"Removed {self.config.filter_out} from .csv file.")
-        print(f"Saved filtered file now .fcs: {new_filename}")
+        filtered_df.to_csv(new_filepath, index = False)
 
         return new_filepath
 
@@ -172,6 +69,134 @@ class DataFilterConverter:
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(self._filter_out_cell, f)
                         for f in self.csv_files]
+            self.new_filepath_list = []
+            for future in concurrent.futures.as_completed(results):
+                try:
+                    result = future.result()
+                    self.new_filepath_list.append(result)
+                except Exception as e:
+                    print(f"Error processing file: {e}")
+        print(f"Removed {self.config.filter_out} from .csv files.")
+
+class FCSFileBuilder:
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        self.csv_files = [f for f in os.listdir(config.filtered_csv_path) if
+                          f.endswith('.csv')
+                          and not f.endswith('_metadata.csv')]
+        self.meta_csv_files =  [f for f in os.listdir(config.csv_dir_metadir) if
+                          f.endswith('_metadata.csv')]
+
+    def _parse_metadata_dataframe(self, metadata_df):
+        """Parse metadata DataFrame (key-value format) for flowio"""
+        self.meta_dict = dict(zip(metadata_df['key'], metadata_df['value']))
+        # Get channel names
+        channel_names_str = self.meta_dict.get('_channel_names_')
+        self.channel_names = ast.literal_eval(channel_names_str)
+        # Get channels string
+        channels_str = self.meta_dict.get('_channels_')
+        if channels_str.startswith('"') and channels_str.endswith('"'):
+            channels_str = channels_str[1:-1]
+        channels_str_clean = re.sub(r' {2,}', '\t', channels_str)
+        self.channels_df = pd.read_csv(io.StringIO(channels_str_clean),
+                                        sep='\t',
+                                        index_col=0)
+
+    def _create_fcs_from_csvs(self, data_csv_path, metadata_csv_path, output_fcs_path):
+        """
+        Create FCS file from separate data and metadata CSV files using flowio
+
+        Parameters:
+        - data_csv_path: path to CSV with flow cytometry event data
+        - metadata_csv_path: path to CSV with channel metadata
+        - output_fcs_path: path for output FCS file
+
+        """
+        metadata_df = pd.read_csv(metadata_csv_path)
+        self._parse_metadata_dataframe(metadata_df)
+
+        data_df = pd.read_csv(data_csv_path)
+        cols_to_keep = [col for col in self.channel_names if col in data_df.columns]
+        data_df = data_df[cols_to_keep]
+        data_array = data_df.to_numpy()
+        flattened_data = data_array.flatten()
+
+        metadata_dict = {
+            '$TOT': self.meta_dict.get('$TOT', str(data_array.shape[0])),
+            '$PAR': self.meta_dict.get('$PAR', str(data_array.shape[1])),
+            '$MODE': self.meta_dict.get('$MODE', 'L'),
+            '$DATATYPE': self.meta_dict.get('$DATATYPE', 'F'),
+            '$BYTEORD': self.meta_dict.get('$BYTEORD', '1,2,3,4'),
+            '$DATE': self.meta_dict.get('$DATE', '25-Apr-25'),
+            '$BTIM': self.meta_dict.get('$BTIM', '12:00:00'),
+            '$ETIM': self.meta_dict.get('$ETIM', '12:01:00'),
+            '$INST': self.meta_dict.get('$INST', 'Unknown'),
+            '$SYS': 'flowio Python CSV Import',
+        }
+
+        channels_df_no_header = self.channels_df.drop('Channel Number')
+        for i, (idx, row) in enumerate(channels_df_no_header.iterrows(), 1):
+            metadata_dict[f'$P{i}N'] = self.channel_names[i-1]
+            if '$PnB' in self.channels_df.columns:
+                metadata_dict[f'$P{i}B'] = str(row['$PnB'])
+            if '$PnR' in self.channels_df.columns:
+                metadata_dict[f'$P{i}R'] = str(row['$PnR'])
+            if '$PnE' in self.channels_df.columns:
+                metadata_dict[f'$P{i}E'] = str(row['$PnE'])
+            if '$PnS' in self.channels_df.columns:
+                metadata_dict[f'$P{i}S'] = str(row['$PnS'])
+
+        for key, value in self.meta_dict.items():
+            if key.startswith('$P') and key.endswith('V'):
+                metadata_dict[key] = str(value)
+
+        print(f"\nCreating FCS file: {output_fcs_path}")
+        try:
+            with open(output_fcs_path, 'wb') as fh:
+                flowio.create_fcs(
+                    file_handle=fh,
+                    event_data=flattened_data,
+                    channel_names=self.channel_names,
+                    metadata_dict=metadata_dict
+                )
+        except Exception as e:
+            print(f"Error creating FCS file: {e}")
+            #print(f"Channel names length: {len(self.channel_names)}")
+            #print(f"Data shape: {data_array.shape}")
+            #print(f"$PAR in metadata: {metadata_dict.get('$PAR')}")
+            raise
+        print("FCS file created successfully")
+
+        return output_fcs_path
+
+    def _get_base_name(self, filepath):
+        """Extract meaningful part of filenamne for csv and meta matching
+
+        Parameters:
+        - filepath: filepath of file to extract filename from.
+
+        """
+        return os.path.splitext(os.path.basename(filepath)
+                                )[0].replace('_dropped', '').replace('_metadata', '')
+
+    def multi_fcs_create(self):
+        """ Process pool executor for _create_fcs_from_csvs """
+        file_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
+        if file_dict is None:
+            raise Exception('meta_csv_files found empty - ensure correct directory chosen')
+        matching_pairs = [
+            (f, file_dict[self._get_base_name(f)])
+            for f in self.csv_files
+            if self._get_base_name(f) in file_dict
+        ]
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = [executor.submit(self._create_fcs_from_csvs,
+                                       os.path.join(self.config.filtered_csv_path, f),
+                                       os.path.join(self.config.csv_dir_metadir, m),
+                                       os.path.join(self.config.filtered_csv_path,
+                                                    f.replace('_dropped.csv', '.fcs')))
+                        for f, m in matching_pairs]
             self.new_filepath_list = []
             for future in concurrent.futures.as_completed(results):
                 try:
@@ -202,7 +227,8 @@ class FlowSOMProcessor:
         - FlowSOM object
 
         """
-        ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list, c_total=100000000)
+        ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list,
+                                         c_total=100000000)
         fsom = fs.FlowSOM(
             ff,
             cols_to_use = self.marker_col_indices,
@@ -219,15 +245,17 @@ class FlowSOMPipeline:
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.datafilter = DataFilterConverter(config)
+        self.builder = FCSFileBuilder(config)
         self.processor = FlowSOMProcessor(config, self.datafilter)
 
     def run(self):
         self.config.__dir_assign__()
         self.processor.get_col_idx()
-        print('.fcs files will be generated from you .csv files for FlowSOM analysis')
+        print('.fcs files will be generated from your .csv files for FlowSOM analysis')
         self.datafilter.multi_filter_cell()
-        fsom = self.processor.run_flowsom()
-        return fsom
+        self.builder.multi_fcs_create()
+        #fsom = self.processor.run_flowsom()
+        #return fsom
 
     def plot_flowSOM(self, fsom):
         """ """
