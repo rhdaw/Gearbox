@@ -161,9 +161,6 @@ class FCSFileBuilder:
                 )
         except Exception as e:
             print(f"Error creating FCS file: {e}")
-            #print(f"Channel names length: {len(self.channel_names)}")
-            #print(f"Data shape: {data_array.shape}")
-            #print(f"$PAR in metadata: {metadata_dict.get('$PAR')}")
             raise
         print("FCS file created successfully")
 
