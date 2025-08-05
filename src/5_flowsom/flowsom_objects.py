@@ -97,6 +97,7 @@ class FCSFileBuilder:
         if channels_str.startswith('"') and channels_str.endswith('"'):
             channels_str = channels_str[1:-1]
         channels_str_clean = re.sub(r' {2,}', '\t', channels_str)
+        channels_str = channels_str.replace('[', '').replace(']', '')
         self.channels_df = pd.read_csv(io.StringIO(channels_str_clean),
                                         sep='\t',
                                         index_col=0)
@@ -141,8 +142,7 @@ class FCSFileBuilder:
             if '$PnR' in self.channels_df.columns:
                 metadata_dict[f'$P{i}R'] = str(row['$PnR'])
             if '$PnE' in self.channels_df.columns:
-                pn_e_value = str(row['$PnE']).strip('[]').replace(' ', '')
-                metadata_dict[f'$P{i}E'] = pn_e_value
+                metadata_dict[f'$P{i}E'] = str(row['$PnE'])
             if '$PnS' in self.channels_df.columns:
                 metadata_dict[f'$P{i}S'] = str(row['$PnS'])
 
