@@ -15,7 +15,7 @@ class PipelineConfig:
     # Input paths
     unitogated_csv_dir: str
     csv_dir_metadir: str
-    filtered_csv_path: str
+    filtered_fcs_path: str
     # FlowSOM settings
     cluster_num: int
     seed: int
@@ -27,21 +27,20 @@ class PipelineConfig:
     def __dir_assign__(self):
         for path in [
                 self.csv_dir_metadir,
-                self.filtered_csv_path,
+                self.filtered_fcs_path,
             ]:
                 if not os.path.exists(path):
                     os.makedirs(path, exist_ok=True)
 
-class DataFilterConverter:
-    """ Filters and Converts .csv flow cytometry files to .fcs files."""
+class DataFilter:
+    """ Filters .csv flow cytometry files"""
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.csv_files = [f for f in os.listdir(config.unitogated_csv_dir) if
                           f.endswith('.csv')]
 
     def _filter_out_cell(self, f):
-        """ Filters out specified cell types from config.filter_out,
-            saves .csv as .fcs for flowSOM
+        """ Filters out specified cell types from config.filter_out
 
         Parameters:
         - f: file to be filtered
@@ -56,7 +55,7 @@ class DataFilterConverter:
         # Create new filename with dropped cell type(s)
         base_name = os.path.splitext(f)[0]
         new_filename = f"{base_name}_dropped.csv"
-        new_filepath = os.path.join(self.config.filtered_csv_path, new_filename)
+        new_filepath = os.path.join(self.config.filtered_fcs_path, new_filename)
 
         # Create new sample with filtered data and save
         filtered_df.to_csv(new_filepath, index = False)
@@ -78,9 +77,10 @@ class DataFilterConverter:
         print(f"Removed {self.config.filter_out} from .csv files.")
 
 class FCSFileBuilder:
+    """ Builds .fcs files from .csv files and their metadata counterparts """
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.csv_files = [f for f in os.listdir(config.filtered_csv_path) if
+        self.csv_files = [f for f in os.listdir(config.filtered_fcs_path) if
                           f.endswith('.csv')
                           and not f.endswith('_metadata.csv')]
         self.meta_csv_files =  [f for f in os.listdir(config.csv_dir_metadir) if
@@ -97,7 +97,7 @@ class FCSFileBuilder:
         if channels_str.startswith('"') and channels_str.endswith('"'):
             channels_str = channels_str[1:-1]
         channels_str_clean = re.sub(r' {2,}', '\t', channels_str)
-        channels_str = channels_str.replace('[', '').replace(']', '')
+        channels_str_clean = channels_str_clean.replace('[', '').replace(']', '')
         self.channels_df = pd.read_csv(io.StringIO(channels_str_clean),
                                         sep='\t',
                                         index_col=0)
@@ -189,9 +189,9 @@ class FCSFileBuilder:
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(self._create_fcs_from_csvs,
-                                       os.path.join(self.config.filtered_csv_path, f),
+                                       os.path.join(self.config.filtered_fcs_path, f),
                                        os.path.join(self.config.csv_dir_metadir, m),
-                                       os.path.join(self.config.filtered_csv_path,
+                                       os.path.join(self.config.filtered_fcs_path,
                                                     f.replace('_dropped.csv', '.fcs')))
                         for f, m in matching_pairs]
             self.new_filepath_list = []
@@ -201,12 +201,18 @@ class FCSFileBuilder:
                     self.new_filepath_list.append(result)
                 except Exception as e:
                     print(f"Error processing file: {e}")
+            list_filled = len(self.new_filepath_list) > 0
+
+            return list_filled
 
 class FlowSOMProcessor:
     """ """
-    def __init__(self, config: PipelineConfig, datafilter: DataFilterConverter):
+    def __init__(self, config: PipelineConfig,
+                 datafilter: DataFilter,
+                 builder: FCSFileBuilder):
         self.config = config
         self.datafilter = datafilter
+        self.builder = builder
 
     def get_col_idx(self):
         """ Gets col idx from csv for use in flowSOM """
@@ -224,7 +230,7 @@ class FlowSOMProcessor:
         - FlowSOM object
 
         """
-        ff = fs.pp.aggregate_flowframes(self.datafilter.new_filepath_list,
+        ff = fs.pp.aggregate_flowframes(self.builder.new_filepath_list,
                                          c_total=100000000)
         fsom = fs.FlowSOM(
             ff,
@@ -241,18 +247,19 @@ class FlowSOMPipeline:
     """ User facing object to run FlowSOM on csv files """
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.datafilter = DataFilterConverter(config)
+        self.datafilter = DataFilter(config)
         self.builder = FCSFileBuilder(config)
-        self.processor = FlowSOMProcessor(config, self.datafilter)
+        self.processor = FlowSOMProcessor(config, self.datafilter, self.builder)
 
     def run(self):
         self.config.__dir_assign__()
         self.processor.get_col_idx()
         print('.fcs files will be generated from your .csv files for FlowSOM analysis')
         self.datafilter.multi_filter_cell()
-        self.builder.multi_fcs_create()
-        #fsom = self.processor.run_flowsom()
-        #return fsom
+        list_filled = self.builder.multi_fcs_create()
+        if list_filled:
+            fsom = self.processor.run_flowsom()
+            return fsom
 
     def plot_flowSOM(self, fsom):
         """ """
