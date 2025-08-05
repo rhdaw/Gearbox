@@ -1,7 +1,6 @@
 import flowsom as fs
 import flowio
 import os
-import flowkit as fk
 from dataclasses import dataclass, field
 from typing import List
 import pandas as pd
@@ -142,7 +141,8 @@ class FCSFileBuilder:
             if '$PnR' in self.channels_df.columns:
                 metadata_dict[f'$P{i}R'] = str(row['$PnR'])
             if '$PnE' in self.channels_df.columns:
-                metadata_dict[f'$P{i}E'] = str(row['$PnE'])
+                pn_e_value = str(row['$PnE']).strip('[]').replace(' ', '')
+                metadata_dict[f'$P{i}E'] = pn_e_value
             if '$PnS' in self.channels_df.columns:
                 metadata_dict[f'$P{i}S'] = str(row['$PnS'])
 
