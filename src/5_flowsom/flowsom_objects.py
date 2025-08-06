@@ -86,6 +86,7 @@ class FCSFileBuilder:
                           and not f.endswith('_metadata.csv')]
         self.meta_csv_files =  [f for f in os.listdir(config.csv_dir_metadir) if
                           f.endswith('_metadata.csv')]
+        self.pns_list =[]
 
     def _parse_metadata_dataframe(self, metadata_df):
         """Parse metadata DataFrame (key-value format) for flowio"""
@@ -122,7 +123,7 @@ class FCSFileBuilder:
         data_array = data_df.to_numpy()
         flattened_data = data_array.flatten()
 
-        metadata_dict = {
+        build_metadata_dict = {
             '$TOT': self.meta_dict.get('$TOT', str(data_array.shape[0])),
             '$PAR': self.meta_dict.get('$PAR', str(data_array.shape[1])),
             '$MODE': self.meta_dict.get('$MODE', 'L'),
@@ -137,27 +138,27 @@ class FCSFileBuilder:
 
         channels_df_no_header = self.channels_df.drop('Channel Number')
         for i, (idx, row) in enumerate(channels_df_no_header.iterrows(), 1):
-            metadata_dict[f'$P{i}N'] = self.channel_names[i-1]
-            metadata_dict[f'$P{i}S'] = self.channel_names[i-1]
+            build_metadata_dict[f'$P{i}N'] = self.channel_names[i-1]
+
             if '$PnB' in self.channels_df.columns:
-                metadata_dict[f'$P{i}B'] = str(row['$PnB'])
+                build_metadata_dict[f'$P{i}B'] = str(row['$PnB'])
             if '$PnR' in self.channels_df.columns:
-                metadata_dict[f'$P{i}R'] = str(row['$PnR'])
+                build_metadata_dict[f'$P{i}R'] = str(row['$PnR'])
             if '$PnE' in self.channels_df.columns:
-                metadata_dict[f'$P{i}E'] = str(row['$PnE'])
+                build_metadata_dict[f'$P{i}E'] = str(row['$PnE'])
 
-        for key, value in self.meta_dict.items():
-            if key.startswith('$P') and key.endswith('V'):
-                metadata_dict[key] = str(value)
+        # for key, value in self.meta_dict.items():
+        #     if key.startswith('$P') and key[-1] in ['S']:
+        #        self.pns_list.append(str(value))
 
-        print(f"\nCreating FCS file: {output_fcs_path}")
         try:
             with open(output_fcs_path, 'wb') as fh:
                 flowio.create_fcs(
                     file_handle=fh,
                     event_data=flattened_data,
                     channel_names=self.channel_names,
-                    metadata_dict=metadata_dict
+                    opt_channel_names=self.channel_names,
+                    metadata_dict=build_metadata_dict
                 )
         except Exception as e:
             print(f"Error creating FCS file: {e}")
@@ -202,7 +203,6 @@ class FCSFileBuilder:
                     print(f"Error processing file: {e}")
             list_filled = len(self.new_filepath_list) > 0
             print(".fcs files created")
-            print(f"self.new_filepath_list:{self.new_filepath_list}")
 
             return list_filled
 
