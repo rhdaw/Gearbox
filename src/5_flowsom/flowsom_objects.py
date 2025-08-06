@@ -8,6 +8,7 @@ import concurrent.futures
 import ast
 import io
 import re
+import numpy as np
 
 @dataclass
 class PipelineConfig:
@@ -137,14 +138,13 @@ class FCSFileBuilder:
         channels_df_no_header = self.channels_df.drop('Channel Number')
         for i, (idx, row) in enumerate(channels_df_no_header.iterrows(), 1):
             metadata_dict[f'$P{i}N'] = self.channel_names[i-1]
+            metadata_dict[f'$P{i}S'] = self.channel_names[i-1]
             if '$PnB' in self.channels_df.columns:
                 metadata_dict[f'$P{i}B'] = str(row['$PnB'])
             if '$PnR' in self.channels_df.columns:
                 metadata_dict[f'$P{i}R'] = str(row['$PnR'])
             if '$PnE' in self.channels_df.columns:
                 metadata_dict[f'$P{i}E'] = str(row['$PnE'])
-            if '$PnS' in self.channels_df.columns:
-                metadata_dict[f'$P{i}S'] = str(row['$PnS'])
 
         for key, value in self.meta_dict.items():
             if key.startswith('$P') and key.endswith('V'):
@@ -162,7 +162,6 @@ class FCSFileBuilder:
         except Exception as e:
             print(f"Error creating FCS file: {e}")
             raise
-        print("FCS file created successfully")
 
         return output_fcs_path
 
@@ -202,6 +201,8 @@ class FCSFileBuilder:
                 except Exception as e:
                     print(f"Error processing file: {e}")
             list_filled = len(self.new_filepath_list) > 0
+            print(".fcs files created")
+            print(f"self.new_filepath_list:{self.new_filepath_list}")
 
             return list_filled
 
@@ -230,7 +231,8 @@ class FlowSOMProcessor:
         - FlowSOM object
 
         """
-        ff = fs.pp.aggregate_flowframes(self.builder.new_filepath_list,
+        fcs_files_array = np.array(self.builder.new_filepath_list)
+        ff = fs.pp.aggregate_flowframes(fcs_files_array,
                                          c_total=100000000)
         fsom = fs.FlowSOM(
             ff,
