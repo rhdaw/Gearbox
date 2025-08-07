@@ -45,7 +45,8 @@ def main():
     # Run pipeline
     pipeline = FlowSOMPipeline(config)
     fsom = pipeline.run()
-    pipeline.plot_flowSOM(fsom)
+    p = pipeline.plot_flowsom(fsom, '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/flowsom_plot.png')
+    umap = pipeline.plot_umap(fsom,'/Users/user/Documents/UNITO_csv_conversion/flowsomtest/umap_plot.png' )
 
 if __name__ == '__main__':
     main()

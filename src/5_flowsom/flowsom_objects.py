@@ -9,6 +9,7 @@ import ast
 import io
 import re
 import numpy as np
+import scanpy as sc
 
 @dataclass
 class PipelineConfig:
@@ -41,12 +42,13 @@ class DataFilter:
                           f.endswith('.csv')]
 
     def _filter_out_cell(self, f):
-        """ Filters out specified cell types from config.filter_out
+        """
+        Filters out specified cell types from config.filter_out
 
         Parameters:
         - f: file to be filtered
 
-            """
+        """
         sample_path = os.path.join(self.config.unitogated_csv_dir, f)
         sample_events_df = pd.read_csv(sample_path)
         filtered_df = sample_events_df.copy()
@@ -207,7 +209,14 @@ class FCSFileBuilder:
             return list_filled
 
 class FlowSOMProcessor:
-    """ """
+    """
+    Runs flowsom module and associated processes
+    needed to build a flowsom object from the .fcs files
+
+    Returns:
+    - FlowSOM object created from aggregated flowframes.
+
+    """
     def __init__(self, config: PipelineConfig,
                  datafilter: DataFilter,
                  builder: FCSFileBuilder):
@@ -263,10 +272,53 @@ class FlowSOMPipeline:
             fsom = self.processor.run_flowsom()
             return fsom
 
-    def plot_flowSOM(self, fsom):
-        """ """
+    def plot_flowsom(self, fsom, save_path):
+        """
+        Create and save a FlowSOM star plot visualization of clustering results.
+
+        Args:
+            fsom (flowsom.main.FlowSOM): A fitted FlowSOM object containing
+                clustering results and data from flow cytometry analysis.
+            save_path (str): File path where the FlowSOM star plot will be saved.
+                Should include the desired file extension (e.g., '.png', '.pdf').
+
+        Returns:
+            matplotlib.figure.Figure: The FlowSOM star plot figure object.
+
+        Example:
+            >>> pipeline = FlowSOMPipeline(config)
+            >>> fsom = pipeline.run()
+            >>> star_plot = pipeline.plot_flowsom(fsom, '/path/to/flowsom_plot.png')
+            >>> star_plot.show()  # Display the plot
+        """
         p = fs.pl.plot_stars(fsom,
                               background_values=fsom.get_cluster_data().obs.metaclustering)
-        p.show()
-
+        p.savefig(save_path,
+            dpi=300,
+            bbox_inches='tight')
         return p
+
+    def plot_umap(self, fsom, save_path):
+        """
+        Create and save a UMAP visualization of FlowSOM clustering results.
+
+        Args:
+            fsom (flowsom.main.FlowSOM): A fitted FlowSOM object containing
+                clustering results and data from flow cytometry analysis.
+            save_path (str): File path where the UMAP plot will be saved.
+                Should include the desired file extension (e.g., '.png', '.pdf').
+
+        Returns:
+            matplotlib.figure.Figure: The UMAP plot figure object.
+
+            >>> pipeline = FlowSOMPipeline(config)
+            >>> fsom = pipeline.run()
+            >>> umap_fig = pipeline.plot_umap(fsom, '/path/to/umap_plot.png')
+            >>> umap_fig.show()  # Display the plot
+        """
+        sc.pp.neighbors(fsom)
+        sc.tl.umap(fsom)
+        umap_plot = sc.pl.umap(fsom, color="metaclustering", show=False)
+        umap_plot.figure.savefig(save_path, dpi=300, bbox_inches='tight')
+
+        return umap_plot
