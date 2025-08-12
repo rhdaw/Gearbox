@@ -291,7 +291,7 @@ class FlowSOMPipeline:
                 .fcs aggregation. Defaults to 1000000000.
 
         Returns:
-            flowsom.main.FlowSOM or None: A trained FlowSOM object containing the
+            flowsom.main.FlowSOM: A trained FlowSOM object containing the
                 self-organizing map, metaclustering results, and cell data. Returns
                 None if FCS file creation fails.
         """
@@ -373,25 +373,32 @@ class FlowSOMPipeline:
         if markers:
             plots = _multi_umap_plot(markers,
                                     subset_fsom,
-                                    save_path)
+                                    save_path,
+                                    subsample)
             return plots
         else:
-            subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
-            umap_plot = sc.pl.umap(subset_fsom, color="metaclustering", show=False)
-            umap_plot.figure.savefig(os.path.join(save_path, "umap_plot.png"),
-                                        dpi=300,
-                                        bbox_inches='tight')
+            umap_plot = metacluster_umap_plot(subset_fsom, save_path)
             return umap_plot
 
+def metacluster_umap_plot(subset_fsom, save_path):
 
-def _multi_umap_plot(markers, subset_fsom, save_path):
+    subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
+    umap_plot = sc.pl.umap(subset_fsom, color="metaclustering", show=False)
+    umap_plot.figure.savefig(os.path.join(save_path, "umap_metacluster_plot.png"),
+                                dpi=300,
+                                bbox_inches='tight')
+    return umap_plot
+
+def _multi_umap_plot(markers, subset_fsom, save_path, subsample):
     """
     Create individual UMAP plots for each marker, colored by expression.
 
     Args:
         markers (str or list): Marker name(s) to plot.
             subset_fsom (anndata.AnnData): Cell data with UMAP coordinates.
-            save_path (str): File path for saving plots.
+        save_path (str): File path for saving plots.
+        subsample (bool): If subsample true, metacluster also generated,
+                as random sampling can cause slight differences in generated UMAP
 
     Returns:
         list: List of matplotlib axes objects for each plot.
@@ -419,4 +426,9 @@ def _multi_umap_plot(markers, subset_fsom, save_path):
                                         dpi=300,
                                         bbox_inches='tight')
             plots.append(umap_plot)
+
+        if subsample:
+            umap_meta_plot = metacluster_umap_plot(subset_fsom, save_path)
+            plots.append(umap_meta_plot)
+
         return plots
