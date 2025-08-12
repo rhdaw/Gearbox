@@ -10,6 +10,7 @@ import io
 import re
 import numpy as np
 import scanpy as sc
+from skimage.filters import threshold_otsu
 
 @dataclass
 class PipelineConfig:
@@ -252,9 +253,8 @@ class FlowSOMProcessor:
         ff = fs.pp.aggregate_flowframes(fcs_files_array,
                                          c_total=1000000000)
         # Data Transform
-        marker_data = ff.X[:, self.marker_col_indices]
-        transformed_data = np.arcsinh(marker_data / 150.0) # 150 reccomended for flowcytometry
-        ff.X[:, self.marker_col_indices] = transformed_data
+        transformed_data = np.arcsinh(ff.X / 150.0) # 150 reccomended for flowcytometry
+        ff.X = transformed_data
 
         # Run flowsom
         ff = ff.copy()
@@ -327,7 +327,7 @@ class FlowSOMPipeline:
         """
         p = fs.pl.plot_stars(fsom,
                               background_values=fsom.get_cluster_data().obs.metaclustering)
-        p.savefig(save_path,
+        p.savefig(os.path.join(save_path, 'flowsom.png'),
             dpi=300,
             bbox_inches='tight')
         return p
@@ -377,11 +377,110 @@ class FlowSOMPipeline:
                                     subsample)
             return plots
         else:
-            umap_plot = metacluster_umap_plot(subset_fsom, save_path)
+            umap_plot = _metacluster_umap_plot(subset_fsom, save_path)
             return umap_plot
 
-def metacluster_umap_plot(subset_fsom, save_path):
+    def calculate_cluster_marker_mean_expression(self,
+                                                fsom,
+                                                cluster_id: int,
+                                                marker_name: str):
+        """
+        Calculate mean expression of a specific marker in a specific cluster.
 
+        Args:
+            fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+            cluster_id (int): Metacluster ID to analyze.
+            marker_name (str): Name of marker to calculate mean expression for.
+
+        Returns:
+            float: Mean expression value for the marker in the specified cluster.
+        """
+        cell_data = fsom.get_cell_data()
+        cluster_mask = cell_data.obs['metaclustering'] == cluster_id
+        cluster_cells = cell_data[cluster_mask]
+        marker_idx = list(cell_data.var_names).index(marker_name)
+        marker_expression = cluster_cells.X[:, marker_idx]
+        avg_expression = np.mean(marker_expression)
+
+        return avg_expression
+
+    def save_readouts(self, fsom, save_location, cluster_level):
+        """
+        Calculate and save FlowSOM clustering readouts to CSV files.
+
+        Args:
+            fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+            save_location (str): Directory path to save CSV files.
+            cluster_level (str): Level for analysis ('metaclusters' or 'clusters').
+
+        Returns:
+            None: Saves counts, percentages, and percentage positive CSV files.
+
+        Notes:
+            Threshold of marker positivity for 'percentage positive' is
+            calculated via skimage.filters.threshold_otsu
+        """
+        otsu_cutoffs = _calculate_otsu_cutoffs(fsom)
+        # Readouts
+        counts = fs.tl.get_counts(fsom,
+                                level=cluster_level)
+        percentages = fs.tl.get_percentages(fsom,
+                                            level=cluster_level)
+        per_pos = fs.tl.get_metacluster_percentages_positive(fsom,
+                                                            cutoffs=otsu_cutoffs)
+        # Save to csv
+        counts.to_csv(os.path.join(save_location,
+                                    f'{cluster_level}_counts.csv'))
+        percentages.to_csv(os.path.join(save_location,
+                                    f'{cluster_level}_percentages.csv'))
+        per_pos.to_csv(os.path.join(save_location,
+                                    f'{cluster_level}_percentage_positive.csv'))
+
+def _calculate_otsu_cutoffs(fsom):
+    """
+    Calculate optimal cutoffs using Otsu's method for each marker.
+
+    Args:
+        fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+
+    Returns:
+        dict: Marker names as keys, Otsu cutoff values as values.
+    """
+    cell_data = fsom.get_cell_data()
+    bad_markers = [
+                    'Time',
+                    'SSC-H',
+                    'SSC-A',
+                    'FSC-H',
+                    'FSC-A',
+                    'SSC-B-H',
+                    'SSC-B-A',
+                    'SSC-W',
+                    'FSC-W'
+                ]
+
+    cutoffs = {
+        marker: threshold_otsu(cell_data.X[:, i])
+        for i, marker in enumerate(cell_data.var_names)
+        if marker not in bad_markers
+    }
+
+    for marker, cutoff in cutoffs.items():
+        print(f"{marker}: Otsu threshold = {cutoff:.2f}")
+
+    return cutoffs
+
+def _metacluster_umap_plot(subset_fsom, save_path):
+    """
+    Create and save a UMAP plot colored by metaclustering results.
+
+    Args:
+        subset_fsom (anndata.AnnData): Cell data with UMAP coordinates.
+        save_path (str): Directory path where plot will be saved.
+
+    Returns:
+        matplotlib.axes.Axes: UMAP plot axes object.
+    """
     subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
     umap_plot = sc.pl.umap(subset_fsom, color="metaclustering", show=False)
     umap_plot.figure.savefig(os.path.join(save_path, "umap_metacluster_plot.png"),
@@ -428,7 +527,7 @@ def _multi_umap_plot(markers, subset_fsom, save_path, subsample):
             plots.append(umap_plot)
 
         if subsample:
-            umap_meta_plot = metacluster_umap_plot(subset_fsom, save_path)
+            umap_meta_plot = _metacluster_umap_plot(subset_fsom, save_path)
             plots.append(umap_meta_plot)
 
         return plots

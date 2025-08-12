@@ -50,7 +50,12 @@ def main():
     umap_plot = pipeline.plot_umap(fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
                         subsample=True,
-                        n_sample = 10_000)
+                        n_sample = 100_000)
+    pipeline.save_readouts(fsom,
+                        '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
+                        'metaclusters')
+    cd4_average = pipeline.calculate_cluster_marker_mean_expression(fsom, 8, 'CD4')
+    print(cd4_average)
 
 if __name__ == '__main__':
     main()
