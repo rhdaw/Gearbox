@@ -46,7 +46,7 @@ class DataFilter:
         Filters out specified cell types from config.filter_out
 
         Parameters:
-        - f: file to be filtered
+            f: file to be filtered
 
         """
         sample_path = os.path.join(self.config.unitogated_csv_dir, f)
@@ -111,9 +111,9 @@ class FCSFileBuilder:
         Create FCS file from separate data and metadata CSV files using flowio
 
         Parameters:
-        - data_csv_path: path to CSV with flow cytometry event data
-        - metadata_csv_path: path to CSV with channel metadata
-        - output_fcs_path: path for output FCS file
+            data_csv_path: path to CSV with flow cytometry event data
+            metadata_csv_path: path to CSV with channel metadata
+            output_fcs_path: path for output FCS file
 
         """
         metadata_df = pd.read_csv(metadata_csv_path)
@@ -172,22 +172,28 @@ class FCSFileBuilder:
         """Extract meaningful part of filenamne for csv and meta matching
 
         Parameters:
-        - filepath: filepath of file to extract filename from.
+            filepath (str): filepath of file to extract filename from.
 
         """
-        return os.path.splitext(os.path.basename(filepath)
-                                )[0].replace('_dropped', '').replace('_metadata', '')
+        base_filename = os.path.splitext(os.path.basename(filepath))[0]
+        final_name = re.sub(r'(_dropped|_metadata|_with_gate_label_dropped|_with_gate_label)',
+                            '',
+                            base_filename)
+        return final_name
+
 
     def multi_fcs_create(self):
         """ Process pool executor for _create_fcs_from_csvs """
         file_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
-        if file_dict is None:
+        if not file_dict:
             raise Exception('meta_csv_files found empty - ensure correct directory chosen')
         matching_pairs = [
             (f, file_dict[self._get_base_name(f)])
             for f in self.csv_files
             if self._get_base_name(f) in file_dict
         ]
+        if not matching_pairs:
+            raise Exception('No matching CSV-metadata pairs found')
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(self._create_fcs_from_csvs,
@@ -214,7 +220,7 @@ class FlowSOMProcessor:
     needed to build a flowsom object from the .fcs files
 
     Returns:
-    - FlowSOM object created from aggregated flowframes.
+        FlowSOM object created from aggregated flowframes.
 
     """
     def __init__(self, config: PipelineConfig,
@@ -232,24 +238,34 @@ class FlowSOMProcessor:
         self.marker_col_indices = [sample_events_df.columns.get_loc(col)
                               for col in self.config.marker_list]
 
-    def run_flowsom(self):
+    def run_flowsom(self, som_xdim, som_ydim, cell_total):
         """ Runs FlowSOM module automatically using self.config
         and self.datafilter settings
 
         Returns:
-        - FlowSOM object
+            FlowSOM object
 
         """
         fcs_files_array = np.array(self.builder.new_filepath_list)
+        # aggregate_flowframes insists that c_total has a value
+        # value given here is arbitary and likely to never be met
         ff = fs.pp.aggregate_flowframes(fcs_files_array,
-                                         c_total=100000000)
+                                         c_total=1000000000)
+        # Data Transform
+        marker_data = ff.X[:, self.marker_col_indices]
+        transformed_data = np.arcsinh(marker_data / 150.0) # 150 reccomended for flowcytometry
+        ff.X[:, self.marker_col_indices] = transformed_data
+
+        # Run flowsom
+        ff = ff.copy()
+        ff.obs_names_make_unique()
         fsom = fs.FlowSOM(
             ff,
             cols_to_use = self.marker_col_indices,
-            xdim=10,
-            ydim=10,
+            xdim=som_xdim,
+            ydim=som_ydim,
             n_clusters=self.config.cluster_num,
-            seed=self.config.seed
+            seed=self.config.seed,
         )
 
         return fsom
@@ -262,14 +278,32 @@ class FlowSOMPipeline:
         self.builder = FCSFileBuilder(config)
         self.processor = FlowSOMProcessor(config, self.datafilter, self.builder)
 
-    def run(self):
+    def run(self, som_xdim: int, som_ydim: int, downsample_cell: int = 1000000000):
+        """
+        Execute the complete FlowSOM analysis pipeline from CSV files to FlowSOM object.
+
+        Args:
+            som_xdim (int): Width (x-dimension) of the Self-Organizing Map grid.
+                Together with som_ydim, determines the number of SOM nodes.
+            som_ydim (int): Height (y-dimension) of the Self-Organizing Map grid.
+                Together with som_xdim, determines the total number of SOM nodes.
+            downsample_cell (int, optional): Number of cells to downsample following
+                .fcs aggregation. Defaults to 1000000000.
+
+        Returns:
+            flowsom.main.FlowSOM or None: A trained FlowSOM object containing the
+                self-organizing map, metaclustering results, and cell data. Returns
+                None if FCS file creation fails.
+        """
         self.config.__dir_assign__()
         self.processor.get_col_idx()
         print('.fcs files will be generated from your .csv files for FlowSOM analysis')
         self.datafilter.multi_filter_cell()
         list_filled = self.builder.multi_fcs_create()
         if list_filled:
-            fsom = self.processor.run_flowsom()
+            fsom = self.processor.run_flowsom(som_xdim,
+                                                som_ydim,
+                                                cell_total=downsample_cell)
             return fsom
 
     def plot_flowsom(self, fsom, save_path):
@@ -279,8 +313,8 @@ class FlowSOMPipeline:
         Args:
             fsom (flowsom.main.FlowSOM): A fitted FlowSOM object containing
                 clustering results and data from flow cytometry analysis.
-            save_path (str): File path where the FlowSOM star plot will be saved.
-                Should include the desired file extension (e.g., '.png', '.pdf').
+            save_path (str): Path to directory where the FlowSOM star plot will be
+                saved.
 
         Returns:
             matplotlib.figure.Figure: The FlowSOM star plot figure object.
@@ -298,27 +332,91 @@ class FlowSOMPipeline:
             bbox_inches='tight')
         return p
 
-    def plot_umap(self, fsom, save_path):
+    def plot_umap(self, fsom, save_path, markers=None, subsample=False, n_sample=None):
         """
         Create and save a UMAP visualization of FlowSOM clustering results.
 
         Args:
-            fsom (flowsom.main.FlowSOM): A fitted FlowSOM object containing
-                clustering results and data from flow cytometry analysis.
-            save_path (str): File path where the UMAP plot will be saved.
-                Should include the desired file extension (e.g., '.png', '.pdf').
+            fsom (flowsom.main.FlowSOM): A fitted FlowSOM object containing clustering
+                results and data from flow cytometry analysis.
+            save_path (str): Path to directory to where UMAP plot will be saved.
+            markers (list, optional): A list of flow cytometry markers to overlay on
+                the generated UMAP. Should match markers in .fcs file exactly, i.e.
+                ['CD4', 'pSTAT5']. Defaults to None.
+            subsample (Boolean, optional): Option to subsample umap to reduce compute
+                time / UMAP complexity. Defaults to False.
+            n_sample (int, optional): Number of cells to sample when subsample=True.
+                Required if subsample=True. Defaults to None.
 
-        Returns:
-            matplotlib.figure.Figure: The UMAP plot figure object.
-
+        Example:
             >>> pipeline = FlowSOMPipeline(config)
             >>> fsom = pipeline.run()
             >>> umap_fig = pipeline.plot_umap(fsom, '/path/to/umap_plot.png')
             >>> umap_fig.show()  # Display the plot
         """
-        sc.pp.neighbors(fsom)
-        sc.tl.umap(fsom)
-        umap_plot = sc.pl.umap(fsom, color="metaclustering", show=False)
-        umap_plot.figure.savefig(save_path, dpi=300, bbox_inches='tight')
+        if subsample and n_sample is None:
+            raise ValueError("n_sample must be provided when subsample=True")
 
-        return umap_plot
+        ref_markers_bool = fsom.get_cell_data().var["cols_used"]
+        subset_fsom = fsom.get_cell_data()[:,
+                                            fsom.get_cell_data().var_names[ref_markers_bool]]
+
+        if subsample and n_sample:
+            sc.pp.subsample(subset_fsom, n_obs=n_sample)
+
+        sc.pp.neighbors(subset_fsom,
+                        random_state=self.config.seed)
+
+        sc.tl.umap(subset_fsom,
+                random_state=self.config.seed)
+
+        if markers:
+            plots = _multi_umap_plot(markers,
+                                    subset_fsom,
+                                    save_path)
+            return plots
+        else:
+            subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
+            umap_plot = sc.pl.umap(subset_fsom, color="metaclustering", show=False)
+            umap_plot.figure.savefig(os.path.join(save_path, "umap_plot.png"),
+                                        dpi=300,
+                                        bbox_inches='tight')
+            return umap_plot
+
+
+def _multi_umap_plot(markers, subset_fsom, save_path):
+    """
+    Create individual UMAP plots for each marker, colored by expression.
+
+    Args:
+        markers (str or list): Marker name(s) to plot.
+            subset_fsom (anndata.AnnData): Cell data with UMAP coordinates.
+            save_path (str): File path for saving plots.
+
+    Returns:
+        list: List of matplotlib axes objects for each plot.
+
+    Raises:
+        TypeError: If markers is not string or list.
+        ValueError: If markers not found in data.
+    """
+    if isinstance(markers, str):
+        markers = [markers]
+    elif isinstance(markers, list):
+        markers = markers
+    else:
+        raise TypeError("markers must be a string or list of strings")
+
+    available_markers = subset_fsom.var_names.tolist()
+    invalid_markers = [m for m in markers if m not in available_markers]
+    if invalid_markers:
+        raise ValueError(f'Markers {invalid_markers} not found in data. Available markers: {available_markers[:10]}...')
+    else:
+        plots = []
+        for m in markers:
+            umap_plot = sc.pl.umap(subset_fsom, color=m, show=False)
+            umap_plot.figure.savefig(os.path.join(save_path, f"{m}.png"),
+                                        dpi=300,
+                                        bbox_inches='tight')
+            plots.append(umap_plot)
+        return plots

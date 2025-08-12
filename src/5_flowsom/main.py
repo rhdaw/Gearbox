@@ -3,7 +3,7 @@ from flowsom_objects import PipelineConfig, FlowSOMPipeline
 def main():
 
     config = PipelineConfig(
-    unitogated_csv_dir = '/Users/user/Documents/UNITO_csv_conversion/', # Where the post UNITO csv files are located
+    unitogated_csv_dir = '/Users/user/Documents/UNITO_csv_conversion/train/', # Where the post UNITO csv files are located
     csv_dir_metadir = '/Users/user/Documents/UNITO_csv_conversion/metadata/', # The same directory as csv_conversion_dir_metadir in unito's main.py()
     filtered_fcs_path = '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/', # Where you want the filtered fcs files to go
     filter_out = ['Neutrophils'],
@@ -38,15 +38,19 @@ def main():
         "CD3",
         "HLADR"
     ], # List of the markers in your csv files that you want to use for FlowSOM clustering
-    cluster_num = 30, # Number of clusters created
+    cluster_num = 25, # Number of clusters created
     seed = 42
     )
 
     # Run pipeline
     pipeline = FlowSOMPipeline(config)
-    fsom = pipeline.run()
-    p = pipeline.plot_flowsom(fsom, '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/flowsom_plot.png')
-    umap = pipeline.plot_umap(fsom,'/Users/user/Documents/UNITO_csv_conversion/flowsomtest/umap_plot.png' )
+    fsom = pipeline.run(som_xdim=10, som_ydim=10)
+    p = pipeline.plot_flowsom(fsom,
+                            '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/')
+    umap_plot = pipeline.plot_umap(fsom,
+                        '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
+                        subsample=True,
+                        n_sample = 10_000)
 
 if __name__ == '__main__':
     main()
