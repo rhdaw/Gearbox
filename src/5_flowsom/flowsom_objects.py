@@ -10,7 +10,8 @@ import io
 import re
 import numpy as np
 import scanpy as sc
-from skimage.filters import threshold_otsu
+from skimage.filters import threshold_otsu, threshold_li, threshold_yen, threshold_mean
+import matplotlib.pyplot as plt
 
 @dataclass
 class PipelineConfig:
@@ -332,7 +333,7 @@ class FlowSOMPipeline:
             bbox_inches='tight')
         return p
 
-    def plot_umap(self, fsom, save_path, markers=None, subsample=False, n_sample=None):
+    def plot_umap(self, fsom, save_path: str, markers=None, subsample=False, n_sample=None):
         """
         Create and save a UMAP visualization of FlowSOM clustering results.
 
@@ -404,50 +405,33 @@ class FlowSOMPipeline:
 
         return avg_expression
 
-    def save_readouts(self, fsom, save_location, cluster_level):
+    def save_readouts(self,
+                        fsom,
+                        save_path,
+                        cluster_level,
+                        threshold_method,
+                        threshold_report = True):
         """
         Calculate and save FlowSOM clustering readouts to CSV files.
 
         Args:
             fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
-            save_location (str): Directory path to save CSV files.
+            save_path (str): Directory path to save CSV files.
             cluster_level (str): Level for analysis ('metaclusters' or 'clusters').
+            threshold_method (str): Method of positive marker thresholding
+                ('otsu', 'li', 'yen', or 'mean').
+            threshold_report (bool): Generate per-marker histogram
+                report of thresholding method. Defaults to True.
 
         Returns:
             None: Saves counts, percentages, and percentage positive CSV files.
 
         Notes:
-            Threshold of marker positivity for 'percentage positive' is
-            calculated via skimage.filters.threshold_otsu
+            Uses fs.tl.get_counts, fs.tl.get_percentages, and
+            fs.tl.get_metacluster_percentages_positive.
+
         """
-        otsu_cutoffs = _calculate_otsu_cutoffs(fsom)
-        # Readouts
-        counts = fs.tl.get_counts(fsom,
-                                level=cluster_level)
-        percentages = fs.tl.get_percentages(fsom,
-                                            level=cluster_level)
-        per_pos = fs.tl.get_metacluster_percentages_positive(fsom,
-                                                            cutoffs=otsu_cutoffs)
-        # Save to csv
-        counts.to_csv(os.path.join(save_location,
-                                    f'{cluster_level}_counts.csv'))
-        percentages.to_csv(os.path.join(save_location,
-                                    f'{cluster_level}_percentages.csv'))
-        per_pos.to_csv(os.path.join(save_location,
-                                    f'{cluster_level}_percentage_positive.csv'))
-
-def _calculate_otsu_cutoffs(fsom):
-    """
-    Calculate optimal cutoffs using Otsu's method for each marker.
-
-    Args:
-        fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
-
-    Returns:
-        dict: Marker names as keys, Otsu cutoff values as values.
-    """
-    cell_data = fsom.get_cell_data()
-    bad_markers = [
+        bad_markers = [
                     'Time',
                     'SSC-H',
                     'SSC-A',
@@ -459,16 +443,179 @@ def _calculate_otsu_cutoffs(fsom):
                     'FSC-W'
                 ]
 
+        calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
+                                                            save_path,
+                                                            threshold_method,
+                                                            threshold_report,
+                                                            bad_markers)
+
+        # Readouts
+        counts = fs.tl.get_counts(fsom,
+                                level=cluster_level)
+        percentages = fs.tl.get_percentages(fsom,
+                                            level=cluster_level)
+        per_pos = fs.tl.get_metacluster_percentages_positive(fsom,
+                                                            cutoffs=calculated_cutoffs)
+        # Save to csv
+        counts.to_csv(os.path.join(save_path,
+                                    f'{cluster_level}_counts.csv'))
+        percentages.to_csv(os.path.join(save_path,
+                                    f'{cluster_level}_percentages.csv'))
+        per_pos.to_csv(os.path.join(save_path,
+                                    f'{cluster_level}_percentage_positive.csv'))
+
+def _calculate_cutoffs_dispatcher(fsom,
+                                    save_path,
+                                    threshold_method,
+                                    threshold_report,
+                                    bad_markers):
+    """Dispatch to different thresholding methods."""
+    method_map = {
+        'otsu': _calculate_otsu_cutoffs,
+        'li': _calculate_li_cutoffs,
+        'yen': _calculate_yen_cutoffs,
+        'mean': _calculate_mean_cutoffs
+    }
+    if threshold_method not in method_map:
+        raise ValueError(f"Unknown method: {threshold_method}. Available: {list(method_map.keys())}")
+
+    return method_map[threshold_method](fsom, bad_markers, threshold_report, save_path)
+
+def _calculate_otsu_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
+    """
+    Calculate optimal cutoffs using Otsu's method for each marker.
+
+    Args:
+        fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+        bad_markers (list): List of markers not to have thresholding applied
+            i.e. bad_markers = ['Time', 'SSC-A']
+
+    Returns:
+        dict: Marker names as keys, Otsu cutoff values as values.
+    """
+    cell_data = fsom.get_cell_data()
     cutoffs = {
         marker: threshold_otsu(cell_data.X[:, i])
         for i, marker in enumerate(cell_data.var_names)
         if marker not in bad_markers
     }
-
-    for marker, cutoff in cutoffs.items():
-        print(f"{marker}: Otsu threshold = {cutoff:.2f}")
+    if threshold_report:
+        _build_histo_report(fsom, cutoffs, 'Otsu', save_path)
 
     return cutoffs
+
+def _calculate_li_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
+    """Calculate cutoffs using Li's minimum cross entropy method."""
+    cell_data = fsom.get_cell_data()
+    cutoffs = {
+        marker: threshold_li(cell_data.X[:, i])
+        for i, marker in enumerate(cell_data.var_names)
+        if marker not in bad_markers
+    }
+    if threshold_report:
+        _build_histo_report(fsom, cutoffs, 'Li', save_path)
+
+    return cutoffs
+
+def _calculate_yen_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
+    """Calculate cutoffs using Yen's maximum correlation criterion."""
+    cell_data = fsom.get_cell_data()
+    cutoffs = {
+        marker: threshold_yen(cell_data.X[:, i])
+        for i, marker in enumerate(cell_data.var_names)
+        if marker not in bad_markers
+    }
+    if threshold_report:
+        _build_histo_report(fsom, cutoffs, 'Yen', save_path)
+
+    return cutoffs
+
+def _calculate_mean_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
+    """ Calculate cutoffs using mean-based thresholding method."""
+    cell_data = fsom.get_cell_data()
+    cutoffs = {
+        marker: threshold_mean(cell_data.X[:, i])
+        for i, marker in enumerate(cell_data.var_names)
+        if marker not in bad_markers
+    }
+    if threshold_report:
+        _build_histo_report(fsom, cutoffs, 'Mean', save_path)
+
+    return cutoffs
+
+def _build_histo_report(fsom, cutoffs, method_name, save_path):
+    """
+    Build histogram report showing marker distributions with thresholds.
+
+    Args:
+        fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+        cutoffs (dict): Dictionary of marker names and their threshold values.
+        method_name (str): Name of thresholding method used.
+        save_path (str): Directory to save histogram plots.
+    Returns:
+        None. Saves report to save_path.
+    """
+    cell_data = fsom.get_cell_data()
+
+    # Report creation
+    n_markers = len(cutoffs)
+    n_cols = 4
+    n_rows = (n_markers + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
+    fig.suptitle(f'Marker Expression Distributions with {method_name} Thresholds',
+                 fontsize=16, y=0.98)
+    axes = axes.flatten()
+
+    #Histogram Creation
+    for idx, (marker, threshold) in enumerate(cutoffs.items()):
+        ax = axes[idx]
+
+        marker_idx = list(cell_data.var_names).index(marker)
+        marker_data = cell_data.X[:, marker_idx]
+        ax.hist(marker_data,
+                bins=100,
+                density=True,
+                alpha=0.7,
+                color='lightblue',
+                edgecolor='black',
+                linewidth=0.5)
+
+        ax.axvline(threshold,
+                color='black',
+                linestyle='-',
+                linewidth=2,
+                )
+
+        ax.set_title(marker, fontsize=14, fontweight='bold')
+        ax.set_xlabel('Expression (arcsinh transformed)')
+        ax.set_ylabel('Density')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Stats as text
+        stats_text = (f'Threshold: {threshold:.2f}\n'
+                    f'Mean: {np.mean(marker_data):.2f}\n'
+                    f'Median: {np.median(marker_data):.2f}\n'
+                    f'Std: {np.std(marker_data):.2f}')
+        ax.text(0.02,
+                0.98,
+                stats_text,
+                transform=ax.transAxes,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round',
+                facecolor='white',
+                alpha=0.8))
+
+    for idx in range(len(cutoffs), len(axes)):
+        axes[idx].axis('off')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    plot_path = os.path.join(save_path, f'threshold_report_{method_name}.pdf')
+    plt.savefig(plot_path, dpi=300, format="pdf", bbox_inches='tight')
+    plt.close()
+
+    print(f'Report saved to {plot_path}')
 
 def _metacluster_umap_plot(subset_fsom, save_path):
     """
@@ -482,7 +629,9 @@ def _metacluster_umap_plot(subset_fsom, save_path):
         matplotlib.axes.Axes: UMAP plot axes object.
     """
     subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
-    umap_plot = sc.pl.umap(subset_fsom, color="metaclustering", show=False)
+    umap_plot = sc.pl.umap(subset_fsom,
+                        color="metaclustering",
+                        show=False)
     umap_plot.figure.savefig(os.path.join(save_path, "umap_metacluster_plot.png"),
                                 dpi=300,
                                 bbox_inches='tight')
@@ -520,7 +669,7 @@ def _multi_umap_plot(markers, subset_fsom, save_path, subsample):
     else:
         plots = []
         for m in markers:
-            umap_plot = sc.pl.umap(subset_fsom, color=m, show=False)
+            umap_plot = sc.pl.umap(subset_fsom, color=m, cmap='rainbow', show=False)
             umap_plot.figure.savefig(os.path.join(save_path, f"{m}.png"),
                                         dpi=300,
                                         bbox_inches='tight')
