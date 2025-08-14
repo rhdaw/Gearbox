@@ -89,7 +89,7 @@ def main():
     pipeline.save_readouts(fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
                         'metaclusters',
-                        threshold_method = 'otsu', # Method to calculate positive marker threshold in clustered data.
+                        threshold_method = 'otsu', # Method to calculate positive marker threshold in clustered data. Default multi-otsu thresholding.
                         threshold_report = True # Prints histogram report on marker threshold, per marker across all cells)
                         )
 

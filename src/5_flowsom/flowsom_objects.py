@@ -10,7 +10,7 @@ import io
 import re
 import numpy as np
 import scanpy as sc
-from skimage.filters import threshold_otsu, threshold_li, threshold_yen, threshold_mean
+from skimage.filters import threshold_multiotsu, threshold_li, threshold_yen, threshold_mean
 import matplotlib.pyplot as plt
 
 @dataclass
@@ -471,7 +471,7 @@ def _calculate_cutoffs_dispatcher(fsom,
                                     bad_markers):
     """Dispatch to different thresholding methods."""
     method_map = {
-        'otsu': _calculate_otsu_cutoffs,
+        'otsu': _calculate_multi_otsu_cutoffs,
         'li': _calculate_li_cutoffs,
         'yen': _calculate_yen_cutoffs,
         'mean': _calculate_mean_cutoffs
@@ -481,7 +481,7 @@ def _calculate_cutoffs_dispatcher(fsom,
 
     return method_map[threshold_method](fsom, bad_markers, threshold_report, save_path)
 
-def _calculate_otsu_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
+def _calculate_multi_otsu_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
     """
     Calculate optimal cutoffs using Otsu's method for each marker.
 
@@ -495,7 +495,7 @@ def _calculate_otsu_cutoffs(fsom, bad_markers: list, threshold_report, save_path
     """
     cell_data = fsom.get_cell_data()
     cutoffs = {
-        marker: threshold_otsu(cell_data.X[:, i])
+        marker: threshold_multiotsu(cell_data.X[:, i])[1]
         for i, marker in enumerate(cell_data.var_names)
         if marker not in bad_markers
     }
