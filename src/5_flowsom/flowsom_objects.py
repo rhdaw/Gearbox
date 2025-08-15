@@ -183,7 +183,6 @@ class FCSFileBuilder:
                             base_filename)
         return final_name
 
-
     def multi_fcs_create(self):
         """ Process pool executor for _create_fcs_from_csvs """
         file_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
@@ -240,7 +239,7 @@ class FlowSOMProcessor:
         self.marker_col_indices = [sample_events_df.columns.get_loc(col)
                               for col in self.config.marker_list]
 
-    def run_flowsom(self, som_xdim, som_ydim, cell_total):
+    def run_flowsom(self, som_xdim, som_ydim, cell_total = None):
         """ Runs FlowSOM module automatically using self.config
         and self.datafilter settings
 
@@ -248,18 +247,30 @@ class FlowSOMProcessor:
             FlowSOM object
 
         """
+        # Make file array and hash map
         fcs_files_array = np.array(self.builder.new_filepath_list)
+        self.file_id_to_name = {
+            i: os.path.basename(filepath).replace('.fcs', '')
+            for i, filepath in enumerate(fcs_files_array)
+        }
+
         # aggregate_flowframes insists that c_total has a value
         # value given here is arbitary and likely to never be met
-        ff = fs.pp.aggregate_flowframes(fcs_files_array,
-                                         c_total=1000000000)
+        if cell_total:
+                ff = fs.pp.aggregate_flowframes(fcs_files_array,
+                                         c_total=cell_total)
+        else:
+            ff = fs.pp.aggregate_flowframes(fcs_files_array,
+                                                c_total=1000000000)
         # Data Transform
         transformed_data = np.arcsinh(ff.X / 150.0) # 150 reccomended for flowcytometry
         ff.X = transformed_data
 
-        # Run flowsom
+        # Run flowsom - apply file hash map to ff.obs for per file analysis
         ff = ff.copy()
         ff.obs_names_make_unique()
+        ff.obs['FCS_File'] = ff.obs['File'].map(self.file_id_to_name)
+
         fsom = fs.FlowSOM(
             ff,
             cols_to_use = self.marker_col_indices,
@@ -278,6 +289,17 @@ class FlowSOMPipeline:
         self.datafilter = DataFilter(config)
         self.builder = FCSFileBuilder(config)
         self.processor = FlowSOMProcessor(config, self.datafilter, self.builder)
+        self.bad_markers = [
+                    'Time',
+                    'SSC-H',
+                    'SSC-A',
+                    'FSC-H',
+                    'FSC-A',
+                    'SSC-B-H',
+                    'SSC-B-A',
+                    'SSC-W',
+                    'FSC-W'
+                ]
 
     def run(self, som_xdim: int, som_ydim: int, downsample_cell: int = 1000000000):
         """
@@ -333,6 +355,57 @@ class FlowSOMPipeline:
             bbox_inches='tight')
         return p
 
+    def plot_umap_save_readouts_by_fcsfile(
+                        self, fsom, save_path,
+                        markers=np.array([]),
+                        threshold_method = 'otsu',
+                        threshold_report = True):
+        """
+        For each FCS file in the FlowSOM object, generate UMAP plots and save summary metrics.
+
+        Args:
+            fsom (flowsom.main.FlowSOM): Trained FlowSOM object.
+            save_path (str): Directory to save plots and metrics.
+            markers (np.ndarray or list, optional): Markers to plot on UMAPs.
+            threshold_method (str, optional): Method for marker positivity thresholding.
+            threshold_report (bool, optional): If True, save thresholding histograms.
+
+        Returns:
+            None
+        """
+        cell_data = fsom.get_cell_data()
+        fcs_files = cell_data.obs['FCS_File'].unique()
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = [executor.submit(self._process_pool_umaps,
+                                        save_path,
+                                        cell_data,
+                                        markers,
+                                        f)
+                       for f in fcs_files]
+            for future in concurrent.futures.as_completed(results):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"Error processing file: {e}")
+
+        calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
+                                                            save_path,
+                                                            threshold_method,
+                                                            threshold_report,
+                                                            self.bad_markers)
+
+        features = fs.tl.get_features(fsom, files = self.builder.new_filepath_list,
+                                        level = np.array(['metaclusters']),
+                                        type = np.array(['counts',
+                                                        'percentages',
+                                                        'percentages_positive']),
+
+                                        positive_cutoffs = calculated_cutoffs
+                                    )
+        for key, df in features.items():
+            df.to_csv(os.path.join(save_path, f'by_fcs_file_{key}.csv'))
+
     def plot_umap(self, fsom, save_path: str, markers=None, subsample=False, n_sample=None):
         """
         Create and save a UMAP visualization of FlowSOM clustering results.
@@ -358,9 +431,13 @@ class FlowSOMPipeline:
         if subsample and n_sample is None:
             raise ValueError("n_sample must be provided when subsample=True")
 
-        ref_markers_bool = fsom.get_cell_data().var["cols_used"]
-        subset_fsom = fsom.get_cell_data()[:,
-                                            fsom.get_cell_data().var_names[ref_markers_bool]]
+        if hasattr(fsom, 'get_cell_data'): #Is FSOM
+            ref_markers_bool = fsom.get_cell_data().var["cols_used"]
+            subset_fsom = fsom.get_cell_data()[:,
+                                                fsom.get_cell_data().var_names[ref_markers_bool]]
+        else: # Is AnnData
+            ref_markers_bool = fsom.var["cols_used"]
+            subset_fsom = fsom[:,fsom.var_names[ref_markers_bool]]
 
         if subsample and n_sample:
             sc.pp.subsample(subset_fsom, n_obs=n_sample)
@@ -371,8 +448,9 @@ class FlowSOMPipeline:
         sc.tl.umap(subset_fsom,
                 random_state=self.config.seed)
 
-        if markers:
-            plots = _multi_umap_plot(markers,
+        if markers is not None and len(markers) > 0:
+            markers = markers.tolist()
+            plots = _marker_umap_plot(markers,
                                     subset_fsom,
                                     save_path,
                                     subsample)
@@ -380,30 +458,6 @@ class FlowSOMPipeline:
         else:
             umap_plot = _metacluster_umap_plot(subset_fsom, save_path)
             return umap_plot
-
-    def calculate_cluster_marker_mean_expression(self,
-                                                fsom,
-                                                cluster_id: int,
-                                                marker_name: str):
-        """
-        Calculate mean expression of a specific marker in a specific cluster.
-
-        Args:
-            fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
-            cluster_id (int): Metacluster ID to analyze.
-            marker_name (str): Name of marker to calculate mean expression for.
-
-        Returns:
-            float: Mean expression value for the marker in the specified cluster.
-        """
-        cell_data = fsom.get_cell_data()
-        cluster_mask = cell_data.obs['metaclustering'] == cluster_id
-        cluster_cells = cell_data[cluster_mask]
-        marker_idx = list(cell_data.var_names).index(marker_name)
-        marker_expression = cluster_cells.X[:, marker_idx]
-        avg_expression = np.mean(marker_expression)
-
-        return avg_expression
 
     def save_readouts(self,
                         fsom,
@@ -431,23 +485,11 @@ class FlowSOMPipeline:
             fs.tl.get_metacluster_percentages_positive.
 
         """
-        bad_markers = [
-                    'Time',
-                    'SSC-H',
-                    'SSC-A',
-                    'FSC-H',
-                    'FSC-A',
-                    'SSC-B-H',
-                    'SSC-B-A',
-                    'SSC-W',
-                    'FSC-W'
-                ]
-
         calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
                                                             save_path,
                                                             threshold_method,
                                                             threshold_report,
-                                                            bad_markers)
+                                                            self.bad_markers)
 
         # Readouts
         counts = fs.tl.get_counts(fsom,
@@ -463,6 +505,23 @@ class FlowSOMPipeline:
                                     f'{cluster_level}_percentages.csv'))
         per_pos.to_csv(os.path.join(save_path,
                                     f'{cluster_level}_percentage_positive.csv'))
+
+    def _process_pool_umaps(self, save_path, cell_data, markers, fcs_file) -> None:
+        """ Process pool'd function for umap generation per fcs file """
+        clean_filename = fcs_file.replace('.fcs', '').replace('/', '_')
+        file_dir = os.path.join(save_path, f"by_file/{clean_filename}")
+        os.makedirs(file_dir, exist_ok=True)
+
+        try:
+            file_mask = cell_data.obs['FCS_File'] == fcs_file
+            file_cell_data = cell_data[file_mask].copy()
+
+            self.plot_umap(file_cell_data, file_dir,
+                        markers=markers)
+            print(f"Completed {clean_filename}")
+
+        except Exception as e:
+            print(f"Error: {e}")
 
 def _calculate_cutoffs_dispatcher(fsom,
                                     save_path,
@@ -500,7 +559,7 @@ def _calculate_multi_otsu_cutoffs(fsom, bad_markers: list, threshold_report, sav
         if marker not in bad_markers
     }
     if threshold_report:
-        _build_histo_report(fsom, cutoffs, 'Otsu', save_path)
+        _build_histo_report(fsom, cutoffs, 'Multi - Otsu', save_path)
 
     return cutoffs
 
@@ -637,7 +696,7 @@ def _metacluster_umap_plot(subset_fsom, save_path):
                                 bbox_inches='tight')
     return umap_plot
 
-def _multi_umap_plot(markers, subset_fsom, save_path, subsample):
+def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
     """
     Create individual UMAP plots for each marker, colored by expression.
 
@@ -680,3 +739,4 @@ def _multi_umap_plot(markers, subset_fsom, save_path, subsample):
             plots.append(umap_meta_plot)
 
         return plots
+
