@@ -196,6 +196,7 @@ class FCSFileBuilder:
         if not matching_pairs:
             raise Exception('No matching CSV-metadata pairs found')
 
+
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(self._create_fcs_from_csvs,
                                        os.path.join(self.config.filtered_fcs_path, f),
@@ -210,10 +211,9 @@ class FCSFileBuilder:
                     self.new_filepath_list.append(result)
                 except Exception as e:
                     print(f"Error processing file: {e}")
-            list_filled = len(self.new_filepath_list) > 0
-            print(".fcs files created")
 
-            return list_filled
+        if len(self.new_filepath_list) == len(matching_pairs):
+            return True
 
 class FlowSOMProcessor:
     """
@@ -322,6 +322,7 @@ class FlowSOMPipeline:
         self.processor.get_col_idx()
         print('.fcs files will be generated from your .csv files for FlowSOM analysis')
         self.datafilter.multi_filter_cell()
+
         list_filled = self.builder.multi_fcs_create()
         if list_filled:
             fsom = self.processor.run_flowsom(som_xdim,
@@ -366,7 +367,8 @@ class FlowSOMPipeline:
         Args:
             fsom (flowsom.main.FlowSOM): Trained FlowSOM object.
             save_path (str): Directory to save plots and metrics.
-            markers (np.ndarray or list, optional): Markers to plot on UMAPs.
+            markers (np.ndarray or list, optional): Markers to overlay on UMAP.
+                Always includes metaclustering.
             threshold_method (str, optional): Method for marker positivity thresholding.
             threshold_report (bool, optional): If True, save thresholding histograms.
 
@@ -376,10 +378,12 @@ class FlowSOMPipeline:
         cell_data = fsom.get_cell_data()
         fcs_files = cell_data.obs['FCS_File'].unique()
 
+        subset_fsom = self._process_fsom_for_umap(cell_data)
+
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._process_pool_umaps,
+            results = [executor.submit(self._process_pool_plot_umaps,
+                                        subset_fsom,
                                         save_path,
-                                        cell_data,
                                         markers,
                                         f)
                        for f in fcs_files]
@@ -428,25 +432,10 @@ class FlowSOMPipeline:
             >>> umap_fig = pipeline.plot_umap(fsom, '/path/to/umap_plot.png')
             >>> umap_fig.show()  # Display the plot
         """
-        if subsample and n_sample is None:
-            raise ValueError("n_sample must be provided when subsample=True")
-
-        if hasattr(fsom, 'get_cell_data'): #Is FSOM
-            ref_markers_bool = fsom.get_cell_data().var["cols_used"]
-            subset_fsom = fsom.get_cell_data()[:,
-                                                fsom.get_cell_data().var_names[ref_markers_bool]]
-        else: # Is AnnData
-            ref_markers_bool = fsom.var["cols_used"]
-            subset_fsom = fsom[:,fsom.var_names[ref_markers_bool]]
-
-        if subsample and n_sample:
-            sc.pp.subsample(subset_fsom, n_obs=n_sample)
-
-        sc.pp.neighbors(subset_fsom,
-                        random_state=self.config.seed)
-
-        sc.tl.umap(subset_fsom,
-                random_state=self.config.seed)
+        if hasattr(fsom, 'obsm') and 'X_umap' in fsom.obsm:
+            subset_fsom = fsom
+        else:
+            subset_fsom = self._process_fsom_for_umap(fsom, subsample, n_sample)
 
         if markers is not None and len(markers) > 0:
             markers = markers.tolist()
@@ -506,15 +495,53 @@ class FlowSOMPipeline:
         per_pos.to_csv(os.path.join(save_path,
                                     f'{cluster_level}_percentage_positive.csv'))
 
-    def _process_pool_umaps(self, save_path, cell_data, markers, fcs_file) -> None:
+    def _process_fsom_for_umap(self, fsom,
+                                subsample=False,
+                                n_sample=None):
+        """
+        Process FlowSOM data for UMAP visualization.
+
+        Args:
+            fsom (flowsom.main.FlowSOM or anndata.AnnData): FlowSOM object or AnnData.
+            subsample (bool, optional): Whether to subsample cells. Defaults to False.
+            n_sample (int, optional): Number of cells to sample if subsample=True.
+
+        Returns:
+            anndata.AnnData: Processed data with UMAP coordinates.
+
+        Raises:
+            ValueError: If subsample=True but n_sample is None.
+        """
+        if subsample and n_sample is None:
+            raise ValueError("n_sample must be provided when subsample=True")
+
+        if hasattr(fsom, 'get_cell_data'): #Is FSOM
+            ref_markers_bool = fsom.get_cell_data().var["cols_used"]
+            subset_fsom = fsom.get_cell_data()[:,
+                                                fsom.get_cell_data().var_names[ref_markers_bool]]
+        else: # Is AnnData
+            ref_markers_bool = fsom.var["cols_used"]
+            subset_fsom = fsom[:,fsom.var_names[ref_markers_bool]]
+
+        if subsample and n_sample:
+            sc.pp.subsample(subset_fsom, n_obs=n_sample)
+
+        sc.pp.neighbors(subset_fsom,
+                        random_state=self.config.seed)
+        sc.tl.umap(subset_fsom,
+                random_state=self.config.seed)
+
+        return subset_fsom
+
+    def _process_pool_plot_umaps(self, subset_fsom, save_path, markers, fcs_file) -> None:
         """ Process pool'd function for umap generation per fcs file """
         clean_filename = fcs_file.replace('.fcs', '').replace('/', '_')
         file_dir = os.path.join(save_path, f"by_file/{clean_filename}")
         os.makedirs(file_dir, exist_ok=True)
 
         try:
-            file_mask = cell_data.obs['FCS_File'] == fcs_file
-            file_cell_data = cell_data[file_mask].copy()
+            file_mask = subset_fsom.obs['FCS_File'] == fcs_file
+            file_cell_data = subset_fsom[file_mask].copy()
 
             self.plot_umap(file_cell_data, file_dir,
                         markers=markers)
@@ -649,7 +676,6 @@ def _build_histo_report(fsom, cutoffs, method_name, save_path):
         ax.set_title(marker, fontsize=14, fontweight='bold')
         ax.set_xlabel('Expression (arcsinh transformed)')
         ax.set_ylabel('Density')
-        ax.legend()
         ax.grid(True, alpha=0.3)
 
         # Stats as text
@@ -690,10 +716,13 @@ def _metacluster_umap_plot(subset_fsom, save_path):
     subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
     umap_plot = sc.pl.umap(subset_fsom,
                         color="metaclustering",
+                        legend_loc = 'on data',
+                        legend_fontsize=12,
                         show=False)
     umap_plot.figure.savefig(os.path.join(save_path, "umap_metacluster_plot.png"),
                                 dpi=300,
                                 bbox_inches='tight')
+    plt.close()
     return umap_plot
 
 def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
@@ -728,15 +757,16 @@ def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
     else:
         plots = []
         for m in markers:
-            umap_plot = sc.pl.umap(subset_fsom, color=m, cmap='rainbow', show=False)
+            umap_plot = sc.pl.umap(subset_fsom, color=m, legend_loc = 'on data',
+                                    legend_fontsize=12, cmap='rainbow', show=False)
             umap_plot.figure.savefig(os.path.join(save_path, f"{m}.png"),
                                         dpi=300,
                                         bbox_inches='tight')
+            plt.close()
             plots.append(umap_plot)
 
-        if subsample:
-            umap_meta_plot = _metacluster_umap_plot(subset_fsom, save_path)
-            plots.append(umap_meta_plot)
+        umap_meta_plot = _metacluster_umap_plot(subset_fsom, save_path)
+        plots.append(umap_meta_plot)
 
         return plots
 

@@ -426,13 +426,13 @@ class UNITOPipeline:
             random.seed(0)
             np.random.seed(0)
 
-            # Step 1: Convert FCS files
+            # # Step 1: Convert FCS files
             self.converter.convert_all_fcs()
 
-            # Step 2: Parse gates
+            # # Step 2: Parse gates
             self.gate_processor.parse_gates()
 
-            # Step 3: Find train files, move to train directory
+            # # Step 3: Find train files, move to train directory
             self._find_train_csv_files()
             self._move_gated_csv_files_to_train()
 

@@ -47,27 +47,27 @@ def main():
     pipeline = FlowSOMPipeline(config)
     fsom = pipeline.run(som_xdim=10, som_ydim=10)
 
-    # p = pipeline.plot_flowsom(fsom,
-    #                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/'
-    #                         )
+    p = pipeline.plot_flowsom(fsom,
+                            '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/'
+                            )
 
-    # umap_plot = pipeline.plot_umap(fsom,
-    #                     '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
-    #                     subsample=True,
-    #                     n_sample = 100_000
-    #                     )
+    umap_plot = pipeline.plot_umap(fsom,
+                        '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
+                        subsample=True,
+                        n_sample = 100_000
+                        )
 
-    # pipeline.save_readouts(fsom,
-    #                     '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
-    #                     'metaclusters',
-    #                     threshold_method = 'otsu',
-    #                     threshold_report = True
-    #                     )
+    pipeline.save_readouts(fsom,
+                        '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
+                        'metaclusters',
+                        threshold_method = 'otsu',
+                        threshold_report = True
+                        )
 
     pipeline.plot_umap_save_readouts_by_fcsfile(
                         fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
-                        markers= np.array(config.marker_list),
+                        markers= np.array(config.marker_list), # must be np.array
                         threshold_method = 'otsu',
                         threshold_report = True
                         )
