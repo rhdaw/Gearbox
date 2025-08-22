@@ -438,7 +438,6 @@ class FlowSOMPipeline:
             subset_fsom = self._process_fsom_for_umap(fsom, subsample, n_sample)
 
         if markers is not None and len(markers) > 0:
-            markers = markers.tolist()
             plots = _marker_umap_plot(markers,
                                     subset_fsom,
                                     save_path,

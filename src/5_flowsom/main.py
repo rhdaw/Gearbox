@@ -54,6 +54,37 @@ def main():
     umap_plot = pipeline.plot_umap(fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
                         subsample=True,
+                        markers=[
+                            "CD45",
+                            "CD33",
+                            "CD4",
+                            "CD16",
+                            "CD14",
+                            "CX3CR1",
+                            "CD27",
+                            "CCR6",
+                            "CD62L",
+                            "CCR2",
+                            "CD25",
+                            "CD8",
+                            "CD32",
+                            "CD86",
+                            "CD64",
+                            "TCRGD",
+                            "CD15",
+                            "CD28",
+                            "CD36",
+                            "CCR5",
+                            "CD45RA",
+                            "CD163",
+                            "FCE1RA",
+                            "CD56",
+                            "CD123",
+                            "CD19",
+                            "CCR7",
+                            "CD3",
+                            "HLADR"
+                        ],
                         n_sample = 100_000
                         )
 
@@ -67,7 +98,7 @@ def main():
     pipeline.plot_umap_save_readouts_by_fcsfile(
                         fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
-                        markers= np.array(config.marker_list), # must be np.array
+                        markers= np.array(config.marker_list), # must be np.array for this method
                         threshold_method = 'otsu',
                         threshold_report = True
                         )
