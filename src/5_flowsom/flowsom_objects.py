@@ -359,8 +359,7 @@ class FlowSOMPipeline:
     def plot_umap_save_readouts_by_fcsfile(
                         self, fsom, save_path,
                         markers=np.array([]),
-                        threshold_method = 'otsu',
-                        threshold_report = True):
+                        threshold_method = 'otsu'):
         """
         For each FCS file in the FlowSOM object, generate UMAP plots and save summary metrics.
 
@@ -377,7 +376,6 @@ class FlowSOMPipeline:
         """
         cell_data = fsom.get_cell_data()
         fcs_files = cell_data.obs['FCS_File'].unique()
-
         subset_fsom = self._process_fsom_for_umap(cell_data)
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
@@ -394,21 +392,21 @@ class FlowSOMPipeline:
                     print(f"Error processing file: {e}")
 
         calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
-                                                            save_path,
-                                                            threshold_method,
-                                                            threshold_report,
-                                                            self.bad_markers)
+                                                    save_path,
+                                                    threshold_method,
+                                                    True,
+                                                    self.bad_markers)
 
-        features = fs.tl.get_features(fsom, files = self.builder.new_filepath_list,
-                                        level = np.array(['metaclusters']),
-                                        type = np.array(['counts',
-                                                        'percentages',
-                                                        'percentages_positive']),
+        for fcs_file in fcs_files:
+            clean_filename = fcs_file.replace('.fcs', '').replace('/', '_')
+            file_save_path = os.path.join(save_path, f"by_file/{clean_filename}")
 
-                                        positive_cutoffs = calculated_cutoffs
-                                    )
-        for key, df in features.items():
-            df.to_csv(os.path.join(save_path, f'by_fcs_file_{key}.csv'))
+            file_mask = subset_fsom.obs['FCS_File'] == fcs_file
+            file_subset = subset_fsom[file_mask].copy()
+
+            self.save_readouts_from_anndata(file_subset,
+                                       file_save_path,
+                                       calculated_cutoffs)
 
     def plot_umap(self, fsom, save_path: str, markers=None, subsample=False, n_sample=None):
         """
@@ -548,6 +546,48 @@ class FlowSOMPipeline:
 
         except Exception as e:
             print(f"Error: {e}")
+
+
+    def save_readouts_from_anndata(self, file_subset, save_path, calculated_cutoffs):
+        """
+        Save readouts directly from AnnData using consistent clustering. 
+        Mirrors FlowSOMs save_readouts function, but actually works. 
+
+        Args:
+            file_subset: AnnData subset for one file with consistent clustering.
+            save_path: Directory to save CSV files.
+            calculated_cutoffs: Dict of marker cutoff values for positivity.
+        """
+
+        metacluster_counts = file_subset.obs['metaclustering'].value_counts().sort_index()
+        total_cells = len(file_subset)
+        metacluster_percentages = metacluster_counts / total_cells
+
+        unique_metaclusters = sorted(file_subset.obs['metaclustering'].unique())
+        perc_pos_data = []
+
+        for mc in unique_metaclusters:
+            mc_mask = file_subset.obs['metaclustering'] == mc
+            mc_cells = file_subset[mc_mask]
+
+            mc_perc_pos = {}
+            for marker, cutoff in calculated_cutoffs.items():
+                if marker in file_subset.var_names:
+                    marker_idx = list(file_subset.var_names).index(marker)
+                    marker_data = mc_cells.X[:, marker_idx]
+                    positive_count = (marker_data > cutoff).sum()
+                    percentage_positive = positive_count / len(mc_cells) if len(mc_cells) > 0 else 0
+                    mc_perc_pos[marker] = percentage_positive
+            perc_pos_data.append(mc_perc_pos)
+
+        metacluster_counts.to_csv(os.path.join(save_path, 'metaclusters_counts.csv'))
+        metacluster_percentages.to_csv(os.path.join(save_path,\
+                                                    'metaclusters_percentages.csv'))
+
+        perc_pos_df = pd.DataFrame(perc_pos_data, index=[f'MC{mc}' for
+                                                        mc in unique_metaclusters])
+        perc_pos_df.to_csv(os.path.join(save_path,
+                                        'metaclusters_percentage_positive.csv'))
 
 def _calculate_cutoffs_dispatcher(fsom,
                                     save_path,
@@ -744,10 +784,10 @@ def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
     """
     if isinstance(markers, str):
         markers = [markers]
-    elif isinstance(markers, list):
+    elif isinstance(markers, (list, np.ndarray)):
         markers = markers
     else:
-        raise TypeError("markers must be a string or list of strings")
+        raise TypeError("markers must be a string, np.array, or list of strings")
 
     available_markers = subset_fsom.var_names.tolist()
     invalid_markers = [m for m in markers if m not in available_markers]
@@ -768,4 +808,3 @@ def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
         plots.append(umap_meta_plot)
 
         return plots
-

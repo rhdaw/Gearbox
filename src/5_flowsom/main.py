@@ -99,8 +99,7 @@ def main():
                         fsom,
                         '/Users/user/Documents/UNITO_csv_conversion/flowsomtest/',
                         markers= np.array(config.marker_list), # must be np.array for this method
-                        threshold_method = 'otsu',
-                        threshold_report = True
+                        threshold_method = 'otsu'
                         )
 
 if __name__ == '__main__':
