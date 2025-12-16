@@ -407,6 +407,7 @@ class FlowSOMPipeline:
             self.save_readouts_from_anndata(file_subset,
                                        file_save_path,
                                        calculated_cutoffs)
+            print('Cluster metrics saved per fcs file.')
 
     def plot_umap(self, fsom, save_path: str, markers=None, subsample=False, n_sample=None):
         """
@@ -546,7 +547,6 @@ class FlowSOMPipeline:
 
         except Exception as e:
             print(f"Error: {e}")
-
 
     def save_readouts_from_anndata(self, file_subset, save_path, calculated_cutoffs):
         """
