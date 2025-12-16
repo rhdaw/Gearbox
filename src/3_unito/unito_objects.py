@@ -81,6 +81,8 @@ class PipelineConfig:
     n_test_files: int = 6
     # Problematic gates
     problematic_gate_list: List = field(default_factory=list)
+    # Seed
+    seed: int = 42
 
     def __dir_assign__(self):
         if self.ram_disk:
@@ -159,10 +161,93 @@ class FileConverter:
             print(f"Error saving data, metadata for {fcs_filename}: {e}")
 
     def downsample_csv(self, csv_file: str, max_rows: int, out_dir: str) -> str:
-        """Downsample a CSV file to max_rows and save to out_dir"""
+        # """Downsample a CSV file to max_rows and save to out_dir"""
+        # df = pd.read_csv(csv_file)
+        # if len(df) > max_rows:
+        #     df = df.sample(n=max_rows, random_state=0)
+        # out_path = os.path.join(out_dir, os.path.basename(csv_file))
+        # df.to_csv(out_path, index=False)
+        # return out_path
+
+        """Downsample a CSV file to max_rows and save to out_dir
+        For test files with gate labels, ensures balanced sampling across all gates"""
         df = pd.read_csv(csv_file)
+
         if len(df) > max_rows:
-            df = df.sample(n=max_rows, random_state=0)
+            # Find all gate columns (end with gate label but not _pred)
+            gate_columns = [
+                col
+                for col in df.columns
+                if col not in ["Time", "FSC-A", "FSC-H", "SSC-A", "SSC-H"]
+                and not col.endswith("_pred")
+            ]
+
+            if gate_columns:
+                # Strategy: Sample equal positive and negative for each gate, then take union
+                sampled_indices = set()
+                samples_per_gate = max(1, max_rows // (len(gate_columns) * 2))
+
+                for gate_col in gate_columns:
+                    # Get positive and negative indices
+                    pos_idx = df[df[gate_col] == 1].index.tolist()
+                    neg_idx = df[df[gate_col] == 0].index.tolist()
+
+                    # Take minimum available from either class
+                    min_class_size = min(len(pos_idx), len(neg_idx))
+                    n_sample = min(samples_per_gate, min_class_size)
+
+                    if n_sample > 0:
+                        # Sample equal amounts from each class (balanced)
+                        sampled_pos = random.sample(pos_idx, n_sample)
+                        sampled_neg = random.sample(neg_idx, n_sample)
+                        sampled_indices.update(sampled_pos)
+                        sampled_indices.update(sampled_neg)
+                    else:
+                        # One class is empty - take what we can from the other
+                        print(
+                            f"  WARNING: {gate_col} has imbalanced classes (pos:{len(pos_idx)}, neg:{len(neg_idx)})"
+                        )
+                        if len(pos_idx) > 0:
+                            sampled_indices.update(
+                                random.sample(
+                                    pos_idx, min(samples_per_gate * 2, len(pos_idx))
+                                )
+                            )
+                        if len(neg_idx) > 0:
+                            sampled_indices.update(
+                                random.sample(
+                                    neg_idx, min(samples_per_gate * 2, len(neg_idx))
+                                )
+                            )
+
+                # Convert to list and limit to max_rows
+                sampled_indices = list(sampled_indices)
+                if len(sampled_indices) > max_rows:
+                    sampled_indices = random.sample(sampled_indices, max_rows)
+
+                df = df.loc[sampled_indices].reset_index(drop=True)
+
+                print(
+                    f"Balanced downsampling: {len(sampled_indices)} rows across {len(gate_columns)} gates"
+                )
+                for gate_col in gate_columns:
+                    pos_count = (df[gate_col] == 1).sum()
+                    neg_count = (df[gate_col] == 0).sum()
+                    ratio = (
+                        pos_count / (pos_count + neg_count)
+                        if (pos_count + neg_count) > 0
+                        else 0
+                    )
+                    print(
+                        f"  {gate_col}: {pos_count} positive, {neg_count} negative (ratio: {ratio:.2%})"
+                    )
+            else:
+                # No gate columns found, do regular sampling
+                df = df.sample(n=max_rows, random_state=self.config.seed)
+        elif len(df) > max_rows:
+            # Training files or no gate labels - regular sampling
+            df = df.sample(n=max_rows, random_state=self.config.seed)
+
         out_path = os.path.join(out_dir, os.path.basename(csv_file))
         df.to_csv(out_path, index=False)
         return out_path
@@ -342,7 +427,7 @@ class UNITOTrainer:
                                 f"Skipping {filename}: No prediction for gate '{gate}' yet"
                             )
                             continue
-                        #  ALWAYS read ground truth from original CSV (has all gate columns)
+
                         gt_csv = os.path.join(
                             self.config.csv_conversion_dir,
                             f"{filename}_with_gate_label.csv",
@@ -567,9 +652,9 @@ class UNITOPipeline:
         self.config.__dir_assign__()
         try:
             # Pytorch settings
-            torch.manual_seed(0)
-            random.seed(0)
-            np.random.seed(0)
+            torch.manual_seed(self.config.seed)
+            random.seed(self.config.seed)
+            np.random.seed(self.config.seed)
 
             # # Step 1: Convert FCS files
             self.converter.convert_all_fcs()
@@ -598,21 +683,6 @@ class UNITOPipeline:
                     csv_path = os.path.join(self.trainer.csv_train_dir, csv_file)
                     self.converter.downsample_csv(
                         csv_path, max_rows, self.trainer.csv_train_dir
-                    )
-
-                # Also downsample test files (those left in csv_conversion_dir)
-                test_csv_files = [
-                    f
-                    for f in os.listdir(self.config.csv_conversion_dir)
-                    if f.endswith("_with_gate_label.csv")
-                ]
-                print(
-                    f"Downsampling {len(test_csv_files)} test files to {max_rows} rows..."
-                )
-                for csv_file in test_csv_files:
-                    csv_path = os.path.join(self.config.csv_conversion_dir, csv_file)
-                    self.converter.downsample_csv(
-                        csv_path, max_rows, self.config.csv_conversion_dir
                     )
 
             # Step 5: Add gate labels columns to test csv
