@@ -47,7 +47,7 @@ The UNITO Pipeline built here automates flow cytometry data processing, gating s
 
 ### Installation
 ```bash
-git clone https://github.com/your-org/Gearbox.git
+git clone https://github.com/rhdaw/Gearbox.git
 cd Gearbox
 python -m venv .venv
 source .venv/bin/activate
