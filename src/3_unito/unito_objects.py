@@ -68,6 +68,7 @@ class PipelineConfig:
     # Output paths
     csv_conversion_dir: str
     csv_conversion_dir_metadir: str
+    csv_conversion_dir_predict: str
     disk_dest: str
     # Hyperparameters
     default_hyperparameters: List[List[float]]
@@ -76,9 +77,9 @@ class PipelineConfig:
     downsample_max_rows: int = 200_000
     device: str = "mps"
     n_worker: int = 30
-    epochs: int = 7
-    problematic_epochs: int = 18
-    n_test_files: int = 6
+    epochs: int = 1000
+    problematic_epochs: int = 1000
+    n_test_files: int = 10
     # Problematic gates
     problematic_gate_list: List = field(default_factory=list)
     # Seed
@@ -107,6 +108,7 @@ class PipelineConfig:
             self.save_prediction_path,
             self.downsample_path,
             self.csv_conversion_dir_metadir,
+            self.csv_conversion_dir_predict,
         ]:
             if not os.path.exists(path):
                 os.makedirs(path, exist_ok=True)
@@ -140,6 +142,24 @@ class FileConverter:
 
     def _convert_fcs_to_csv(self, fcs_file: str, output_dir: str) -> None:
         """Generate .csv of fcs_file required for UNITO processing"""
+
+        def _apply_arcsinh(df: pd.DataFrame, cofactor=200.0):
+            cols_to_transform = []
+            for col in list(df.columns):
+                if col not in [
+                    "Time",
+                    "FSC-A",
+                    "FSC-H",
+                    "FSC-W",
+                    "SSC-A",
+                    "SSC-H",
+                    "SSC-W",
+                ]:
+                    cols_to_transform.append(col)
+
+            df[cols_to_transform] = np.arcsinh(df[cols_to_transform] / cofactor)
+            return df
+
         try:
             fcs_filename = os.path.basename(fcs_file)
             m, data = fcsparser.parse(fcs_file, reformat_meta=True)
@@ -147,6 +167,7 @@ class FileConverter:
             df = pd.DataFrame(data)
             csv_filename = fcs_filename.replace(".fcs", ".csv")
             df_output = os.path.join(self.config.csv_conversion_dir, csv_filename)
+            df = _apply_arcsinh(df)
             df.to_csv(df_output, index=False)
             print(f"{fcs_filename} converted to csv")
             # Save Meta
@@ -161,93 +182,10 @@ class FileConverter:
             print(f"Error saving data, metadata for {fcs_filename}: {e}")
 
     def downsample_csv(self, csv_file: str, max_rows: int, out_dir: str) -> str:
-        # """Downsample a CSV file to max_rows and save to out_dir"""
-        # df = pd.read_csv(csv_file)
-        # if len(df) > max_rows:
-        #     df = df.sample(n=max_rows, random_state=0)
-        # out_path = os.path.join(out_dir, os.path.basename(csv_file))
-        # df.to_csv(out_path, index=False)
-        # return out_path
-
-        """Downsample a CSV file to max_rows and save to out_dir
-        For test files with gate labels, ensures balanced sampling across all gates"""
+        """Downsample a CSV file to max_rows and save to out_dir"""
         df = pd.read_csv(csv_file)
-
         if len(df) > max_rows:
-            # Find all gate columns (end with gate label but not _pred)
-            gate_columns = [
-                col
-                for col in df.columns
-                if col not in ["Time", "FSC-A", "FSC-H", "SSC-A", "SSC-H"]
-                and not col.endswith("_pred")
-            ]
-
-            if gate_columns:
-                # Strategy: Sample equal positive and negative for each gate, then take union
-                sampled_indices = set()
-                samples_per_gate = max(1, max_rows // (len(gate_columns) * 2))
-
-                for gate_col in gate_columns:
-                    # Get positive and negative indices
-                    pos_idx = df[df[gate_col] == 1].index.tolist()
-                    neg_idx = df[df[gate_col] == 0].index.tolist()
-
-                    # Take minimum available from either class
-                    min_class_size = min(len(pos_idx), len(neg_idx))
-                    n_sample = min(samples_per_gate, min_class_size)
-
-                    if n_sample > 0:
-                        # Sample equal amounts from each class (balanced)
-                        sampled_pos = random.sample(pos_idx, n_sample)
-                        sampled_neg = random.sample(neg_idx, n_sample)
-                        sampled_indices.update(sampled_pos)
-                        sampled_indices.update(sampled_neg)
-                    else:
-                        # One class is empty - take what we can from the other
-                        print(
-                            f"  WARNING: {gate_col} has imbalanced classes (pos:{len(pos_idx)}, neg:{len(neg_idx)})"
-                        )
-                        if len(pos_idx) > 0:
-                            sampled_indices.update(
-                                random.sample(
-                                    pos_idx, min(samples_per_gate * 2, len(pos_idx))
-                                )
-                            )
-                        if len(neg_idx) > 0:
-                            sampled_indices.update(
-                                random.sample(
-                                    neg_idx, min(samples_per_gate * 2, len(neg_idx))
-                                )
-                            )
-
-                # Convert to list and limit to max_rows
-                sampled_indices = list(sampled_indices)
-                if len(sampled_indices) > max_rows:
-                    sampled_indices = random.sample(sampled_indices, max_rows)
-
-                df = df.loc[sampled_indices].reset_index(drop=True)
-
-                print(
-                    f"Balanced downsampling: {len(sampled_indices)} rows across {len(gate_columns)} gates"
-                )
-                for gate_col in gate_columns:
-                    pos_count = (df[gate_col] == 1).sum()
-                    neg_count = (df[gate_col] == 0).sum()
-                    ratio = (
-                        pos_count / (pos_count + neg_count)
-                        if (pos_count + neg_count) > 0
-                        else 0
-                    )
-                    print(
-                        f"  {gate_col}: {pos_count} positive, {neg_count} negative (ratio: {ratio:.2%})"
-                    )
-            else:
-                # No gate columns found, do regular sampling
-                df = df.sample(n=max_rows, random_state=self.config.seed)
-        elif len(df) > max_rows:
-            # Training files or no gate labels - regular sampling
-            df = df.sample(n=max_rows, random_state=self.config.seed)
-
+            df = df.sample(n=max_rows, random_state=0)
         out_path = os.path.join(out_dir, os.path.basename(csv_file))
         df.to_csv(out_path, index=False)
         return out_path
@@ -324,6 +262,8 @@ class UNITOTrainer:
                 path2_lastgate_pred_list,
             )
         ):
+            is_sequential = gate_pre is not None and str(gate_pre).lower() != "none"
+
             # Granular hyperparameter settings for problematic gates
             if self.config.problematic_gate_list and any(
                 g in gate for g in self.config.problematic_gate_list
@@ -342,8 +282,8 @@ class UNITOTrainer:
                 gate_pre,
                 gate,
                 csv_train_dir,
-                convex=True,
-                seq=(gate_pre is not None),
+                convex=False,
+                seq=is_sequential,
                 dest=dest,
             )
             train_test_val_split(gate, csv_train_dir, dest, "train")
@@ -363,14 +303,15 @@ class UNITOTrainer:
             #         for f in os.listdir(path_raw)
             #         if f.endswith(".csv") and not f.endswith("_with_gate_label.csv")
             #     ]
+            prediction_gate_pre = f"{gate_pre}_pred" if is_sequential else gate_pre
             process_table(
                 x_axis,
                 y_axis,
-                gate_pre,
+                prediction_gate_pre,
                 gate,
                 path_raw,
-                convex=True,
-                seq=(gate_pre is not None),
+                convex=False,
+                seq=is_sequential,
                 dest=dest,
             )
             train_test_val_split(gate, path_raw, dest, "pred")
@@ -379,7 +320,7 @@ class UNITOTrainer:
             model_path = f"{dest}/model/{gate}_model.pt"
             gate_prediction_path = f"{save_prediction_path}/{gate}"
             os.makedirs(gate_prediction_path, exist_ok=True)
-            data_df_pred, predictions_dict = UNITO_gating(
+            data_df_pred, all_file_predictions = UNITO_gating(
                 model_path,
                 x_axis,
                 y_axis,
@@ -389,136 +330,22 @@ class UNITOTrainer:
                 device,
                 gate_prediction_path,
                 dest,
-                seq=(gate_pre is not None),
+                seq=is_sequential,
                 gate_pre=gate_pre,
             )
 
-            # Collect all predictions for this gate, across all files,
-            # to the all_predictions dict
+            # Collect all_file_predictions for this gate, across all files,
+            # to the all_file_predictions dict
             # gate_predictions is a nested dict of {key = {gate}_pred: value = [binary classifiers]}
 
-            for filename, gate_predictions in predictions_dict.items():
+            # # 9e. Evaluation - filter to only test files with ground truth
+            for filename, gate_predictions in all_file_predictions.items():
                 if filename not in all_predictions:
                     all_predictions[filename] = {}
                 all_predictions[filename].update(gate_predictions)
 
-            # 9e. Evaluation - filter to only test files with ground truth
-            if self.test_files:
-                # Strip _with_gate_label.csv to match all_predictions keys
-                test_file_basenames = [
-                    f.replace("_with_gate_label.csv", "") for f in self.test_files
-                ]
-                print(f"Evaluating gate '{gate}' on test files: {test_file_basenames}")
-
-                # Filter all_predictions to only test files
-                test_predictions = {
-                    filename: preds
-                    for filename, preds in all_predictions.items()
-                    if filename in test_file_basenames
-                }
-
-                if test_predictions:
-                    # Read the ground truth CSV files for test files and merge with predictions
-                    test_dfs = []
-                    for filename in test_predictions.keys():
-                        # Check if this file has predictions for the CURRENT gate
-                        if gate not in test_predictions[filename]:
-                            print(
-                                f"Skipping {filename}: No prediction for gate '{gate}' yet"
-                            )
-                            continue
-
-                        gt_csv = os.path.join(
-                            self.config.csv_conversion_dir,
-                            f"{filename}_with_gate_label.csv",
-                        )
-
-                        if not os.path.exists(gt_csv):
-                            print(f"Warning: Ground truth file not found: {gt_csv}")
-                            continue
-
-                        df = pd.read_csv(gt_csv)
-
-                        # For subsequent gates, filter to cells that passed parent gate
-                        if i > 0:
-                            # Read parent predictions to match row indices
-                            parent_gate = gate_pre
-                            parent_pred_csv = os.path.join(
-                                self.config.save_prediction_path,
-                                parent_gate,
-                                f"{filename}.csv",
-                            )
-
-                            if os.path.exists(parent_pred_csv):
-                                df_parent = pd.read_csv(parent_pred_csv)
-                                # Match by Time column (event number) if available
-                                if "Time" in df.columns and "Time" in df_parent.columns:
-                                    df = df[
-                                        df["Time"].isin(df_parent["Time"])
-                                    ].reset_index(drop=True)
-                                else:
-                                    # Fallback: assume same order, take first N rows
-                                    print(
-                                        f"WARNING: No Time column, using first {len(df_parent)} rows"
-                                    )
-                                    df = df.iloc[: len(df_parent)].reset_index(
-                                        drop=True
-                                    )
-                            else:
-                                print(
-                                    f"ERROR: Parent prediction file not found: {parent_pred_csv}"
-                                )
-                                continue
-
-                        print(f"DEBUG: Reading from {gt_csv}")
-                        print(f"DEBUG: CSV has {len(df)} rows")
-                        print(f"DEBUG: CSV columns: {df.columns.tolist()}")
-                        print(
-                            f"DEBUG: Prediction array length: {len(test_predictions[filename][gate])}"
-                        )
-
-                        # Verify ground truth column exists
-                        if gate not in df.columns:
-                            print(f"ERROR: Ground truth column '{gate}' not in CSV!")
-                            print(f"Available columns: {df.columns.tolist()}")
-                            continue
-
-                        # Check length match
-                        if len(test_predictions[filename][gate]) != len(df):
-                            print(
-                                f"ERROR: Length mismatch - pred:{len(test_predictions[filename][gate])}, gt:{len(df)}"
-                            )
-                            continue
-
-                        # Add prediction column
-                        df[f"{gate}_pred"] = test_predictions[filename][gate]
-                        test_dfs.append(df)
-
-                    if test_dfs:
-                        data_df_pred_test = pd.concat(test_dfs, ignore_index=True)
-                        print(
-                            f"Evaluating on {len(data_df_pred_test)} rows from {len(test_dfs)} test files"
-                        )
-                        # DEBUG: Check what's actually in the predictions
-                        print(f"\nDEBUG: Ground truth '{gate}' distribution:")
-                        print(data_df_pred_test[gate].value_counts())
-                        print(f"\nDEBUG: Predictions '{gate}_pred' distribution:")
-                        print(data_df_pred_test[f"{gate}_pred"].value_counts())
-                        print("\nDEBUG: First 20 rows:")
-                        print(data_df_pred_test[[gate, f"{gate}_pred"]].head(20))
-                        accuracy, recall, precision, f1 = evaluation(
-                            data_df_pred_test, gate
-                        )
-
-                    else:
-                        print(
-                            f"WARNING: No test files with ground truth found for gate '{gate}', skipping evaluation"
-                        )
-                        accuracy, recall, precision, f1 = 0, 0, 0, 0
-            else:
-                print("WARNING: No test files set, using all data for evaluation")
-                accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
-
+            # 9e. Evaluation
+            accuracy, recall, precision, f1 = evaluation(data_df_pred, gate)
             print(
                 f"{gate}: accuracy:{accuracy}, recall:{recall}, precision:{precision}, f1 score:{f1}"
             )
@@ -728,6 +555,81 @@ class UNITOPipeline:
                 print("To manually cleanup: hdiutil detach /Volumes/RAMDisk -force")
             raise
 
+    def predict_only(self, predict_dir: str) -> None:
+        """Run prediction on files without ground truth using trained models."""
+
+        dest = self.config.disk_dest
+        save_prediction_path = os.path.join(dest, "prediction")
+        add_gate_labels_to_test_files(
+            test_dir=predict_dir, train_dir=self.trainer.csv_train_dir
+        )
+
+        print("\n=== Prediction Only Mode ===")
+        print(f"Predict dir: {predict_dir}")
+        print(f"Using models from: {dest}/model/")
+
+        all_predictions = {}
+
+        for i, (gate_pre, gate, x_axis, y_axis) in enumerate(
+            zip(self.gate_pre_list, self.gate_list, self.x_axis_list, self.y_axis_list)
+        ):
+            is_sequential = gate_pre is not None and str(gate_pre).lower() != "none"
+
+            if is_sequential:
+                path_raw = os.path.join(save_prediction_path, gate_pre, "")
+            else:
+                path_raw = os.path.join(predict_dir, "")
+
+            print(f"\nPredicting {gate}...")
+
+            model_path = f"{dest}/model/{gate}_model.pt"
+            if not os.path.exists(model_path):
+                print(f"ERROR: Model not found: {model_path}")
+                continue
+
+            gate_prediction_path = os.path.join(save_prediction_path, gate)
+            os.makedirs(gate_prediction_path, exist_ok=True)
+
+            # Preprocess
+            process_table(
+                x_axis,
+                y_axis,
+                f"{gate_pre}_pred" if is_sequential else gate_pre,
+                gate,
+                path_raw,
+                convex=False,
+                seq=is_sequential,
+                dest=dest,
+            )
+            train_test_val_split(gate, path_raw, dest, "pred")
+
+            # Predict
+            data_df_pred, predictions_dict = UNITO_gating(
+                model_path,
+                x_axis,
+                y_axis,
+                gate,
+                path_raw,
+                self.config.n_worker,
+                self.config.device,
+                gate_prediction_path,
+                dest,
+                seq=is_sequential,
+                gate_pre=gate_pre,
+            )
+
+            # Accumulate predictions
+            for filename, gate_predictions in predictions_dict.items():
+                if filename not in all_predictions:
+                    all_predictions[filename] = {}
+                all_predictions[filename].update(gate_predictions)
+
+            print(f"{gate}: Predicted {len(predictions_dict)} files")
+
+        # Write predictions to CSV
+        apply_predictions_to_csv(all_predictions, predict_dir)
+        print("\n=== Prediction Complete ===")
+
     def _finalize_results(
         self, hyperparameter_df, all_predictions, csv_conversion_dir
     ) -> None:
@@ -744,8 +646,21 @@ class UNITOPipeline:
             if f.endswith("_with_gate_label.csv")
         ]
         print(f"Found {len(self.training_csv_files)} files with gate labels")
+
         if len(self.training_csv_files) == 0:
-            print("Check if already moved to gated csv files to correct dir")
+            print("Check if already moved gated csv files to correct dir")
+            return
+
+        # Move non-gated CSV files to predict folder
+        for f in os.listdir(self.config.csv_conversion_dir):
+            if f.endswith(".csv") and f not in self.training_csv_files:
+                source_path = os.path.join(self.config.csv_conversion_dir, f)
+                destination_path = os.path.join(
+                    self.config.csv_conversion_dir_predict, f
+                )
+                shutil.move(source_path, destination_path)
+
+        print(f"Non-gated files moved to: {self.config.csv_conversion_dir_predict}")
 
     def _move_gated_csv_files_to_train(
         self,

@@ -1,52 +1,53 @@
-
 import flowkit as fk
 import pandas as pd
 import os
-from lxml import etree as ET
 import concurrent.futures
 
 # Adding gate labels to train .csv files.
 
+
 def _extract_gate_names_from_tuple(gate_tuple):
     """Extract all gate names from the tuple structure"""
-    terminal_gate = gate_tuple[0]  
-    gate_path = gate_tuple[1]     
+    terminal_gate = gate_tuple[0]
+    gate_path = gate_tuple[1]
     all_gates = list(gate_path) + [terminal_gate]
-    all_gates.remove('root') 
+    all_gates.remove("root")
     return all_gates
 
+
 def _adjust_filename_and_save(sample_id, csv_dir, gate_df, gate_data):
-    """ Adjusts to a .csv file and saves the file to the csv_dir """
-    sample_id_nofcs = sample_id.replace('.fcs','')
+    """Adjusts to a .csv file and saves the file to the csv_dir"""
+    sample_id_nofcs = sample_id.replace(".fcs", "")
     csv_path = os.path.join(csv_dir, f"{sample_id_nofcs}.csv")
     if not os.path.exists(csv_path):
         print(f"CSV for {sample_id} not found, skipping.")
-        return  
-    
+        return
+
     csv_df = pd.read_csv(csv_path)
 
     # Error handling on checking cell # across the gate dataframe and the fcs file (now called csv)
     if len(csv_df) != len(gate_df):
         print(f"ERROR: Cell count mismatch for {sample_id}")
         print(f"  Original CSV: {len(csv_df)} cells")
-        print(f"  Gate data: {len(gate_df)} cells") 
+        print(f"  Gate data: {len(gate_df)} cells")
         print("  Skipping this sample - data integrity issue")
-        return  
-        
+        return
+
     # Add the gate columns to CSV
     for gate_name in gate_data.keys():
         csv_df[gate_name] = gate_df[gate_name].values
 
-    # Save 
+    # Save
     output_path = os.path.join(csv_dir, f"{sample_id_nofcs}_with_gate_label.csv")
     csv_df.to_csv(output_path, index=False)
     print(f"Saved labeled CSV for {sample_id_nofcs}")
 
-def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
-    """ Uses the converted and processed .csv files and the .fcs files that they origin from. 
-    Takes the Gate_Label from the .fcs file and applies it to the .csv """
 
-    workspace = fk.Workspace(wsp_path, fcs_samples = wsp_fcs_dir)
+def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
+    """Uses the converted and processed .csv files and the .fcs files that they origin from.
+    Takes the Gate_Label from the .fcs file and applies it to the .csv"""
+
+    workspace = fk.Workspace(wsp_path, fcs_samples=wsp_fcs_dir)
     workspace.analyze_samples()
     sample_ids = list(workspace.get_sample_ids())
     print(f"Found {len(sample_ids)} samples to process")
@@ -57,59 +58,56 @@ def parse_fcs_add_gate_label(wsp_path, wsp_fcs_dir, csv_dir):
         try:
             sample = workspace.get_sample(sample_id)
             gate_ids = workspace.get_gate_ids(sample_id)
-            terminal_gates = []
-            for gate_id in gate_ids:
-                child_gates = workspace.get_child_gate_ids(sample_id, gate_id[0], gate_path= gate_id[1])
-                if not child_gates:  # No children = terminal gate
-                    terminal_gates.append(gate_id)
-            
-            # Get the number of events in the sample - each event needs a gate label
-            num_events = len(sample.get_events(source= 'raw'))
+            gate_ids = [g for g in gate_ids if g[0] != "root"]
 
-            # Collect all unique gate names
-            all_unique_gates = set()
-            for gate_id in terminal_gates:
+            # Get the number of events in the sample - each event needs a gate label
+            num_events = len(sample.get_events(source="raw"))
+
+            gate_data = {}
+
+            # Build one label column per gate from that gate's own membership.
+            # If a gate name appears in multiple paths, merge with logical OR.
+            for gate_id in gate_ids:
                 try:
-                    gate_names = _extract_gate_names_from_tuple(gate_id)
-                    all_unique_gates.update(gate_names)
-                except:
-                    pass
-    
-            gate_data = {gate: [0] * num_events for gate in all_unique_gates} # Sets everything to 0 intially.
-            
-            for gate_id in terminal_gates:
-                try:
-                    membership = workspace.get_gate_membership(sample_id, gate_id[0], gate_path= gate_id[1])
-                    # Update labels for cells in this terminal gate
-                    for i, is_member in enumerate(membership):
-                        if is_member:
-                            gate_names = _extract_gate_names_from_tuple(gate_id)
-                            for gate_name in gate_names:
-                                if gate_name in gate_data:
-                                    gate_data[gate_name][i] = 1
+                    gate_name = gate_id[0]
+                    membership = workspace.get_gate_membership(
+                        sample_id, gate_name, gate_path=gate_id[1]
+                    )
+                    membership_int = [1 if bool(v) else 0 for v in membership]
+
+                    if gate_name in gate_data:
+                        gate_data[gate_name] = [
+                            max(a, b)
+                            for a, b in zip(gate_data[gate_name], membership_int)
+                        ]
+                    else:
+                        gate_data[gate_name] = membership_int
                 except Exception as e:
-                    print(f"Error getting membership for terminal gate {gate_id}: {e}")
-            
+                    print(f"Error getting membership for gate {gate_id}: {e}")
+
             # Create DataFrame with separate gate columns (UNITO format)
             gate_df = pd.DataFrame(gate_data)
-            print('Gating data to be appended to gated flow files:')
+            print("Gating data to be appended to gated flow files:")
             print(gate_df.columns.values)
             _adjust_filename_and_save(sample_id, csv_dir, gate_df, gate_data)
-    
+
         except Exception as e:
             print(f"Error processing {sample_id}: {e}")
-    print('.csv processing complete')
+    print(".csv processing complete")
     return None
 
 
-# Extracting gating strategy from wsp 
+# Extracting gating strategy from wsp
 
-def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structure.csv"):
+
+def extract_gating_strategy(
+    wsp_path, wsp_fcs_dir, output_path="./gating_structure.csv"
+):
     """Extract gating strategy from FlowJo workspace and save as a CSV for UNITO to use
-    Here use a LCRS approach to reduce the N - Tree of a gating strategy to a binary tree. """
+    Here use a LCRS approach to reduce the N - Tree of a gating strategy to a binary tree."""
 
     class GateNode:
-        def __init__(self, name, x_axis = None, y_axis = None, parent = None):
+        def __init__(self, name, x_axis=None, y_axis=None, parent=None):
             self.name = name
             self.x_axis = x_axis
             self.y_axis = y_axis
@@ -117,7 +115,7 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
             self.children = []
             self.left_child = None
             self.right_sibling = None
-    
+
     def _parse_flowjo_workspace_flowkit(wsp_path, wsp_fcs_dir):
         # load and analyze workspace
         ws = fk.Workspace(wsp_path, fcs_samples=wsp_fcs_dir)
@@ -161,20 +159,22 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
 
     def _convert_to_lcrs(root_gates):
         """Convert N-ary tree to Left Child Right Sibling representation"""
+
         def _convert_node_(node):
             if node.children:
                 node.left_child = node.children[0]
                 for i in range(len(node.children) - 1):
-                    node.children[i].right_sibling = node.children[i+1]
+                    node.children[i].right_sibling = node.children[i + 1]
                 for child in node.children:
                     _convert_node_(child)
             return node
 
-        return[_convert_node_(r) for r in root_gates] 
+        return [_convert_node_(r) for r in root_gates]
 
     def _get_all_paths_lcrs(lcrs_roots):
-        """ Get all possible root to leaf paths from the LCRS tree """
+        """Get all possible root to leaf paths from the LCRS tree"""
         paths = []
+
         def _path_extract_(node, path):
             path.append(node)
             if node.left_child is None:
@@ -184,8 +184,9 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
             path.pop()
             if node.right_sibling:
                 _path_extract_(node.right_sibling, path)
+
         for r in lcrs_roots:
-            _path_extract_(r,[])
+            _path_extract_(r, [])
         return paths
 
     def _generate_strategy_dataframe(all_paths):
@@ -193,19 +194,21 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
         for pid, path in enumerate(all_paths):
             pname = " -> ".join(n.name for n in path)
             for sid, node in enumerate(path):
-                data.append({
-                    'Gate': node.name,
-                    'Parent_Gate': path[sid-1].name if sid>0 else 'None',
-                    'X_axis': node.x_axis,
-                    'Y_axis': node.y_axis,
-                    'Is_Terminal': sid==len(path)-1,
-                    'Path_ID': pid,
-                    'Path_Name': pname,
-                    'Step': sid
-                })
+                data.append(
+                    {
+                        "Gate": node.name,
+                        "Parent_Gate": path[sid - 1].name if sid > 0 else "None",
+                        "X_axis": node.x_axis,
+                        "Y_axis": node.y_axis,
+                        "Is_Terminal": sid == len(path) - 1,
+                        "Path_ID": pid,
+                        "Path_Name": pname,
+                        "Step": sid,
+                    }
+                )
         return pd.DataFrame(data)
 
-# Code to run functions
+    # Code to run functions
     print(f"Parsing FlowJo workspace: {wsp_path}")
     roots = _parse_flowjo_workspace_flowkit(wsp_path, wsp_fcs_dir)
     if not roots:
@@ -218,27 +221,45 @@ def extract_gating_strategy(wsp_path, wsp_fcs_dir, output_path="./gating_structu
     df = _generate_strategy_dataframe(paths)
 
     # Dataframe cleanup
-    df = df.drop_duplicates(subset=['Gate','Parent_Gate'], keep='first') #UNITO needs just one entry of a gate - this removes duplicates of earlier nodes created by the LCRS approach.
+    df = df.drop_duplicates(
+        subset=["Gate", "Parent_Gate"], keep="first"
+    )  # UNITO needs just one entry of a gate - this removes duplicates of earlier nodes created by the LCRS approach.
 
     return df
 
-def clean_gating_strategy(panel_metadata_path, gating_strat_df = None):
-    """ Required in the absence of proper cytometry labels - uses batch correction panel file to correct X and Y axis labels from flurophore -> marker """
+
+def clean_gating_strategy(panel_metadata_path, gating_strat_df=None):
+    """Required in the absence of proper cytometry labels - uses batch correction panel file to correct X and Y axis labels from flurophore -> marker"""
     panel_metadata = pd.read_csv(panel_metadata_path)
     gating_strat_df = gating_strat_df.copy()
 
-    for col in ['X_axis', 'Y_axis']:
-        gating_strat_df[col] = gating_strat_df[col].astype(str).str.extract(r'id:\s*([^)]*)', expand=False).str.strip()
-                                
-    channel_to_antigen = panel_metadata.set_index('Channel')['Antigen'].to_dict()
+    for col in ["X_axis", "Y_axis"]:
+        gating_strat_df[col] = (
+            gating_strat_df[col]
+            .astype(str)
+            .str.extract(r"id:\s*([^)]*)", expand=False)
+            .str.strip()
+        )
+
+    channel_to_antigen = panel_metadata.set_index("Channel")["Antigen"].to_dict()
     print(gating_strat_df)
 
-    gating_strat_df['X_axis'] = gating_strat_df['X_axis'].map(channel_to_antigen).fillna(gating_strat_df['X_axis'])
-    gating_strat_df['Y_axis'] = gating_strat_df['Y_axis'].map(channel_to_antigen).fillna(gating_strat_df['Y_axis'])
+    gating_strat_df["X_axis"] = (
+        gating_strat_df["X_axis"]
+        .map(channel_to_antigen)
+        .fillna(gating_strat_df["X_axis"])
+    )
+    gating_strat_df["Y_axis"] = (
+        gating_strat_df["Y_axis"]
+        .map(channel_to_antigen)
+        .fillna(gating_strat_df["Y_axis"])
+    )
 
     return gating_strat_df
 
+
 # Add binary classification gate information to test .csv files.
+
 
 def _add_gate_cols(f, all_train_cols, test_dir):
     test_df = pd.read_csv(os.path.join(test_dir, f))
@@ -247,23 +268,31 @@ def _add_gate_cols(f, all_train_cols, test_dir):
     if cols_to_add:
         test_df = test_df.assign(**cols_to_add)
         test_df.to_csv(os.path.join(test_dir, f), index=False)
-        print(f'Added {len(cols_to_add)} gate columns to {f}')
+        print(f"Added {len(cols_to_add)} gate columns to {f}")
     else:
-        print(f'No new columns to add to {f} - already has gate labels')
+        print(f"No new columns to add to {f} - already has gate labels")
+
 
 def add_gate_labels_to_test_files(test_dir, train_dir):
-    """ Takes Gate lables from train .csv and applies to all test .csv files """
-    train_csv_files = [f for f in os.listdir(train_dir) if f.endswith('_with_gate_label.csv')]
-    test_csv_files = [f for f in os.listdir(test_dir) if f.endswith('.csv') and not f.endswith('_with_gate_label.csv')]
+    """Takes Gate lables from train .csv and applies to all test .csv files"""
+    train_csv_files = [
+        f for f in os.listdir(train_dir) if f.endswith("_with_gate_label.csv")
+    ]
+    test_csv_files = [
+        f
+        for f in os.listdir(test_dir)
+        if f.endswith(".csv") and not f.endswith("_with_gate_label.csv")
+    ]
     train_df = pd.read_csv(os.path.join(train_dir, train_csv_files[0]))
     all_train_cols = list(train_df.columns)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
-        results = [executor.submit(_add_gate_cols, f, all_train_cols, test_dir) for f in test_csv_files]
+        results = [
+            executor.submit(_add_gate_cols, f, all_train_cols, test_dir)
+            for f in test_csv_files
+        ]
         for future in concurrent.futures.as_completed(results):
             try:
                 future.result()  # Raise any exceptions that occurred
             except Exception as e:
                 print(f"Error processing file: {e}")
-
-

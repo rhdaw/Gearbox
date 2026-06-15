@@ -2,20 +2,31 @@ import flowsom as fs
 import flowio
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import Optional, List, Dict
 import pandas as pd
 import concurrent.futures
 import ast
 import io
 import re
+from numbers import Real
 import numpy as np
 import scanpy as sc
-from skimage.filters import threshold_multiotsu, threshold_li, threshold_yen, threshold_mean
+import dill as pickle
+from skimage.filters import (
+    threshold_multiotsu,
+    threshold_li,
+    threshold_yen,
+    threshold_mean,
+)
+import gc
 import matplotlib.pyplot as plt
+from umap_sketch_fit import fit_on_sketch_transform_all_in_memory
+
 
 @dataclass
 class PipelineConfig:
-    """ Configuration of flowsom pipeline """
+    """Configuration of flowsom pipeline"""
+
     # Input paths
     unitogated_csv_dir: str
     csv_dir_metadir: str
@@ -27,21 +38,27 @@ class PipelineConfig:
     filter_out: List = field(default_factory=list)
     # Marker list for flowSOM
     marker_list: List = field(default_factory=list)
+    # Marker threshold dict
+    custom_threshold_dict: Optional[Dict] = None
+    # Columns to drop before FCS creation (not used for analysis)
 
     def __dir_assign__(self):
         for path in [
-                self.csv_dir_metadir,
-                self.filtered_fcs_path,
-            ]:
-                if not os.path.exists(path):
-                    os.makedirs(path, exist_ok=True)
+            self.csv_dir_metadir,
+            self.filtered_fcs_path,
+        ]:
+            if not os.path.exists(path):
+                os.makedirs(path, exist_ok=True)
+
 
 class DataFilter:
-    """ Filters .csv flow cytometry files"""
+    """Filters .csv flow cytometry files"""
+
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.csv_files = [f for f in os.listdir(config.unitogated_csv_dir) if
-                          f.endswith('.csv')]
+        self.csv_files = [
+            f for f in os.listdir(config.unitogated_csv_dir) if f.endswith(".csv")
+        ]
 
     def _filter_out_cell(self, f):
         """
@@ -63,15 +80,16 @@ class DataFilter:
         new_filepath = os.path.join(self.config.filtered_fcs_path, new_filename)
 
         # Create new sample with filtered data and save
-        filtered_df.to_csv(new_filepath, index = False)
+        filtered_df.to_csv(new_filepath, index=False)
 
         return new_filepath
 
     def multi_filter_cell(self):
-        """ Process pool executor for _filter_out_cell """
+        """Process pool executor for _filter_out_cell"""
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._filter_out_cell, f)
-                        for f in self.csv_files]
+            results = [
+                executor.submit(self._filter_out_cell, f) for f in self.csv_files
+            ]
             self.new_filepath_list = []
             for future in concurrent.futures.as_completed(results):
                 try:
@@ -81,32 +99,79 @@ class DataFilter:
                     print(f"Error processing file: {e}")
         print(f"Removed {self.config.filter_out} from .csv files.")
 
+
 class FCSFileBuilder:
-    """ Builds .fcs files from .csv files and their metadata counterparts """
+    """Builds .fcs files from .csv files and their metadata counterparts"""
+
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.csv_files = [f for f in os.listdir(config.filtered_fcs_path) if
-                          f.endswith('.csv')
-                          and not f.endswith('_metadata.csv')]
-        self.meta_csv_files =  [f for f in os.listdir(config.csv_dir_metadir) if
-                          f.endswith('_metadata.csv')]
-        self.pns_list =[]
+        self.csv_files = []
+        self.meta_csv_files = []
+        self._refresh_file_lists()
+        self.pns_list = []
+
+    def _refresh_file_lists(self):
+        self.csv_files = [
+            f
+            for f in os.listdir(self.config.filtered_fcs_path)
+            if f.endswith(".csv") and not f.endswith("_metadata.csv")
+        ]
+        self.meta_csv_files = [
+            f
+            for f in os.listdir(self.config.csv_dir_metadir)
+            if f.endswith("_metadata.csv")
+        ]
+
+    def _filter_pairs_by_required_markers(self, matching_pairs):
+        """Keep only file pairs where CSV contains all required markers."""
+        required_markers = list(self.config.marker_list)
+        if not required_markers:
+            return matching_pairs
+
+        valid_pairs = []
+        skipped = []
+        for data_file, meta_file in matching_pairs:
+            data_path = os.path.join(self.config.filtered_fcs_path, data_file)
+            try:
+                header_cols = pd.read_csv(data_path, nrows=0).columns.tolist()
+            except Exception as exc:
+                skipped.append((data_file, [f"<read_error: {exc}>"]))
+                continue
+
+            missing_markers = [
+                marker for marker in required_markers if marker not in header_cols
+            ]
+            if missing_markers:
+                skipped.append((data_file, missing_markers))
+                continue
+
+            valid_pairs.append((data_file, meta_file))
+
+        if skipped:
+            print(
+                "Skipping files missing required marker columns "
+                f"({len(skipped)} of {len(matching_pairs)}):"
+            )
+            for filename, missing in skipped:
+                print(f" - {filename}: missing {missing}")
+
+        return valid_pairs
 
     def _parse_metadata_dataframe(self, metadata_df):
         """Parse metadata DataFrame (key-value format) for flowio"""
-        self.meta_dict = dict(zip(metadata_df['key'], metadata_df['value']))
+        self.meta_dict = dict(zip(metadata_df["key"], metadata_df["value"]))
         # Get channel names
-        channel_names_str = self.meta_dict.get('_channel_names_')
+        channel_names_str = self.meta_dict.get("_channel_names_")
         self.channel_names = ast.literal_eval(channel_names_str)
         # Get channels string
-        channels_str = self.meta_dict.get('_channels_')
+        channels_str = self.meta_dict.get("_channels_")
         if channels_str.startswith('"') and channels_str.endswith('"'):
             channels_str = channels_str[1:-1]
-        channels_str_clean = re.sub(r' {2,}', '\t', channels_str)
-        channels_str_clean = channels_str_clean.replace('[', '').replace(']', '')
-        self.channels_df = pd.read_csv(io.StringIO(channels_str_clean),
-                                        sep='\t',
-                                        index_col=0)
+        channels_str_clean = re.sub(r" {2,}", "\t", channels_str)
+        channels_str_clean = channels_str_clean.replace("[", "").replace("]", "")
+        self.channels_df = pd.read_csv(
+            io.StringIO(channels_str_clean), sep="\t", index_col=0
+        )
 
     def _create_fcs_from_csvs(self, data_csv_path, metadata_csv_path, output_fcs_path):
         """
@@ -128,41 +193,41 @@ class FCSFileBuilder:
         flattened_data = data_array.flatten()
 
         build_metadata_dict = {
-            '$TOT': self.meta_dict.get('$TOT', str(data_array.shape[0])),
-            '$PAR': self.meta_dict.get('$PAR', str(data_array.shape[1])),
-            '$MODE': self.meta_dict.get('$MODE', 'L'),
-            '$DATATYPE': self.meta_dict.get('$DATATYPE', 'F'),
-            '$BYTEORD': self.meta_dict.get('$BYTEORD', '1,2,3,4'),
-            '$DATE': self.meta_dict.get('$DATE', '25-Apr-25'),
-            '$BTIM': self.meta_dict.get('$BTIM', '12:00:00'),
-            '$ETIM': self.meta_dict.get('$ETIM', '12:01:00'),
-            '$INST': self.meta_dict.get('$INST', 'Unknown'),
-            '$SYS': 'flowio Python CSV Import',
+            "$TOT": self.meta_dict.get("$TOT", str(data_array.shape[0])),
+            "$PAR": self.meta_dict.get("$PAR", str(data_array.shape[1])),
+            "$MODE": self.meta_dict.get("$MODE", "L"),
+            "$DATATYPE": self.meta_dict.get("$DATATYPE", "F"),
+            "$BYTEORD": self.meta_dict.get("$BYTEORD", "1,2,3,4"),
+            "$DATE": self.meta_dict.get("$DATE", "25-Apr-25"),
+            "$BTIM": self.meta_dict.get("$BTIM", "12:00:00"),
+            "$ETIM": self.meta_dict.get("$ETIM", "12:01:00"),
+            "$INST": self.meta_dict.get("$INST", "Unknown"),
+            "$SYS": "flowio Python CSV Import",
         }
 
-        channels_df_no_header = self.channels_df.drop('Channel Number')
+        channels_df_no_header = self.channels_df.drop("Channel Number")
         for i, (idx, row) in enumerate(channels_df_no_header.iterrows(), 1):
-            build_metadata_dict[f'$P{i}N'] = self.channel_names[i-1]
+            build_metadata_dict[f"$P{i}N"] = self.channel_names[i - 1]
 
-            if '$PnB' in self.channels_df.columns:
-                build_metadata_dict[f'$P{i}B'] = str(row['$PnB'])
-            if '$PnR' in self.channels_df.columns:
-                build_metadata_dict[f'$P{i}R'] = str(row['$PnR'])
-            if '$PnE' in self.channels_df.columns:
-                build_metadata_dict[f'$P{i}E'] = str(row['$PnE'])
+            if "$PnB" in self.channels_df.columns:
+                build_metadata_dict[f"$P{i}B"] = str(row["$PnB"])
+            if "$PnR" in self.channels_df.columns:
+                build_metadata_dict[f"$P{i}R"] = str(row["$PnR"])
+            if "$PnE" in self.channels_df.columns:
+                build_metadata_dict[f"$P{i}E"] = str(row["$PnE"])
 
         # for key, value in self.meta_dict.items():
         #     if key.startswith('$P') and key[-1] in ['S']:
         #        self.pns_list.append(str(value))
 
         try:
-            with open(output_fcs_path, 'wb') as fh:
+            with open(output_fcs_path, "wb") as fh:
                 flowio.create_fcs(
                     file_handle=fh,
                     event_data=flattened_data,
                     channel_names=self.channel_names,
                     opt_channel_names=self.channel_names,
-                    metadata_dict=build_metadata_dict
+                    metadata_dict=build_metadata_dict,
                 )
         except Exception as e:
             print(f"Error creating FCS file: {e}")
@@ -178,32 +243,44 @@ class FCSFileBuilder:
 
         """
         base_filename = os.path.splitext(os.path.basename(filepath))[0]
-        final_name = re.sub(r'(_dropped|_metadata|_with_gate_label_dropped|_with_gate_label)',
-                            '',
-                            base_filename)
+        final_name = re.sub(
+            r"(_dropped|_metadata|_with_gate_label_dropped|_with_gate_label|_with_UNITO_predictions)",
+            "",
+            base_filename,
+        )
         return final_name
 
     def multi_fcs_create(self):
-        """ Process pool executor for _create_fcs_from_csvs """
+        """Process pool executor for _create_fcs_from_csvs"""
+        self._refresh_file_lists()
         file_dict = {self._get_base_name(m): m for m in self.meta_csv_files}
         if not file_dict:
-            raise Exception('meta_csv_files found empty - ensure correct directory chosen')
+            raise Exception(
+                "meta_csv_files found empty - ensure correct directory chosen"
+            )
         matching_pairs = [
             (f, file_dict[self._get_base_name(f)])
             for f in self.csv_files
             if self._get_base_name(f) in file_dict
         ]
+        matching_pairs = self._filter_pairs_by_required_markers(matching_pairs)
         if not matching_pairs:
-            raise Exception('No matching CSV-metadata pairs found')
-
+            raise Exception(
+                "No valid CSV-metadata pairs found after required-marker filtering"
+            )
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._create_fcs_from_csvs,
-                                       os.path.join(self.config.filtered_fcs_path, f),
-                                       os.path.join(self.config.csv_dir_metadir, m),
-                                       os.path.join(self.config.filtered_fcs_path,
-                                                    f.replace('_dropped.csv', '.fcs')))
-                        for f, m in matching_pairs]
+            results = [
+                executor.submit(
+                    self._create_fcs_from_csvs,
+                    os.path.join(self.config.filtered_fcs_path, f),
+                    os.path.join(self.config.csv_dir_metadir, m),
+                    os.path.join(
+                        self.config.filtered_fcs_path, f.replace("_dropped.csv", ".fcs")
+                    ),
+                )
+                for f, m in matching_pairs
+            ]
             self.new_filepath_list = []
             for future in concurrent.futures.as_completed(results):
                 try:
@@ -215,6 +292,7 @@ class FCSFileBuilder:
         if len(self.new_filepath_list) == len(matching_pairs):
             return True
 
+
 class FlowSOMProcessor:
     """
     Runs flowsom module and associated processes
@@ -224,23 +302,59 @@ class FlowSOMProcessor:
         FlowSOM object created from aggregated flowframes.
 
     """
-    def __init__(self, config: PipelineConfig,
-                 datafilter: DataFilter,
-                 builder: FCSFileBuilder):
+
+    def __init__(
+        self, config: PipelineConfig, datafilter: DataFilter, builder: FCSFileBuilder
+    ):
         self.config = config
         self.datafilter = datafilter
         self.builder = builder
 
     def get_col_idx(self):
-        """ Gets col idx from csv for use in flowSOM """
-        sample_path = os.path.join(self.config.unitogated_csv_dir,
-                                    self.datafilter.csv_files[0])
+        """Gets col idx from csv for use in flowSOM"""
+        sample_path = os.path.join(
+            self.config.unitogated_csv_dir, self.datafilter.csv_files[0]
+        )
         sample_events_df = pd.read_csv(sample_path)
-        self.marker_col_indices = [sample_events_df.columns.get_loc(col)
-                              for col in self.config.marker_list]
+        self.marker_col_indices = [
+            sample_events_df.columns.get_loc(col) for col in self.config.marker_list
+        ]
 
-    def run_flowsom(self, som_xdim, som_ydim, cell_total = None):
-        """ Runs FlowSOM module automatically using self.config
+    def _resolve_marker_indices_from_var_names(self, var_names):
+        """Resolve marker indices from flowframe var names with case-insensitive fallback."""
+        var_list = [str(v) for v in var_names]
+        index_by_name = {name: idx for idx, name in enumerate(var_list)}
+        lower_index_by_name = {name.lower(): idx for idx, name in enumerate(var_list)}
+
+        resolved_indices = []
+        missing_markers = []
+        for marker in self.config.marker_list:
+            if marker in index_by_name:
+                resolved_indices.append(index_by_name[marker])
+                continue
+
+            marker_lower = marker.lower()
+            if marker_lower in lower_index_by_name:
+                resolved_indices.append(lower_index_by_name[marker_lower])
+                continue
+
+            missing_markers.append(marker)
+
+        if missing_markers:
+            print(
+                "Warning: these markers were not found in aggregated flowframe and "
+                f"will be skipped: {missing_markers}"
+            )
+
+        if not resolved_indices:
+            raise ValueError(
+                "No configured markers were found in aggregated flowframe columns."
+            )
+
+        return resolved_indices
+
+    def run_flowsom(self, som_xdim, som_ydim, cell_total=None):
+        """Runs FlowSOM module automatically using self.config
         and self.datafilter settings
 
         Returns:
@@ -250,30 +364,42 @@ class FlowSOMProcessor:
         # Make file array and hash map
         fcs_files_array = np.array(self.builder.new_filepath_list)
         self.file_id_to_name = {
-            i: os.path.basename(filepath).replace('.fcs', '')
+            i: os.path.basename(filepath).replace(".fcs", "")
             for i, filepath in enumerate(fcs_files_array)
         }
 
         # aggregate_flowframes insists that c_total has a value
         # value given here is arbitary and likely to never be met
         if cell_total:
-                ff = fs.pp.aggregate_flowframes(fcs_files_array,
-                                         c_total=cell_total)
+            ff = fs.pp.aggregate_flowframes(fcs_files_array, c_total=cell_total)
         else:
-            ff = fs.pp.aggregate_flowframes(fcs_files_array,
-                                                c_total=1000000000)
+            ff = fs.pp.aggregate_flowframes(fcs_files_array, c_total=1000000000)
+
+        marker_col_indices = self._resolve_marker_indices_from_var_names(ff.var_names)
+
+        # Remove rows containing NaN/inf in marker columns used for clustering
+        marker_matrix = np.asarray(ff.X[:, marker_col_indices])
+        finite_mask = np.isfinite(marker_matrix).all(axis=1)
+        removed_events = int((~finite_mask).sum())
+        if removed_events > 0:
+            print(
+                f"Removed {removed_events} events with non-finite marker values "
+                "before FlowSOM clustering."
+            )
+            ff = ff[finite_mask].copy()
+
         # Data Transform
-        transformed_data = np.arcsinh(ff.X / 150.0) # 150 reccomended for flowcytometry
-        ff.X = transformed_data
+        # transformed_data = np.arcsinh(ff.X / 150.0) # 150 reccomended for flowcytometry
+        # ff.X = transformed_data
 
         # Run flowsom - apply file hash map to ff.obs for per file analysis
         ff = ff.copy()
         ff.obs_names_make_unique()
-        ff.obs['FCS_File'] = ff.obs['File'].map(self.file_id_to_name)
+        ff.obs["FCS_File"] = ff.obs["File"].map(self.file_id_to_name)
 
         fsom = fs.FlowSOM(
             ff,
-            cols_to_use = self.marker_col_indices,
+            cols_to_use=marker_col_indices,
             xdim=som_xdim,
             ydim=som_ydim,
             n_clusters=self.config.cluster_num,
@@ -282,24 +408,29 @@ class FlowSOMProcessor:
 
         return fsom
 
+
 class FlowSOMPipeline:
-    """ User facing object to run FlowSOM on csv files """
+    """User facing object to run FlowSOM on csv files"""
+
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.datafilter = DataFilter(config)
         self.builder = FCSFileBuilder(config)
         self.processor = FlowSOMProcessor(config, self.datafilter, self.builder)
         self.bad_markers = [
-                    'Time',
-                    'SSC-H',
-                    'SSC-A',
-                    'FSC-H',
-                    'FSC-A',
-                    'SSC-B-H',
-                    'SSC-B-A',
-                    'SSC-W',
-                    'FSC-W'
-                ]
+            "Time",
+            "SSC-H",
+            "SSC-A",
+            "FSC-H",
+            "FSC-A",
+            "SSC-B-H",
+            "SSC-B-A",
+            "SSC-W",
+            "FSC-W",
+            "AF-A",
+            "QC",
+            "CX3XR1",
+        ]
 
     def run(self, som_xdim: int, som_ydim: int, downsample_cell: int = 1000000000):
         """
@@ -320,15 +451,24 @@ class FlowSOMPipeline:
         """
         self.config.__dir_assign__()
         self.processor.get_col_idx()
-        print('.fcs files will be generated from your .csv files for FlowSOM analysis')
+        print(".fcs files will be generated from your .csv files for FlowSOM analysis")
         self.datafilter.multi_filter_cell()
 
         list_filled = self.builder.multi_fcs_create()
         if list_filled:
-            fsom = self.processor.run_flowsom(som_xdim,
-                                                som_ydim,
-                                                cell_total=downsample_cell)
+            fsom = self.processor.run_flowsom(
+                som_xdim, som_ydim, cell_total=downsample_cell
+            )
             return fsom
+
+    def save_flowsom_pkl(self, fsom, pkl_path: str):
+        with open(pkl_path, "wb") as f:
+            pickle.dump(fsom, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load_flowsom_pkl(self, pkl_path: str):
+        with open(pkl_path, "rb") as f:
+            fsom = pickle.load(f)
+        return fsom
 
     def plot_flowsom(self, fsom, save_path):
         """
@@ -349,19 +489,23 @@ class FlowSOMPipeline:
             >>> star_plot = pipeline.plot_flowsom(fsom, '/path/to/flowsom_plot.png')
             >>> star_plot.show()  # Display the plot
         """
-        p = fs.pl.plot_stars(fsom,
-                              background_values=fsom.get_cluster_data().obs.metaclustering)
-        p.savefig(os.path.join(save_path, 'flowsom.png'),
-            dpi=300,
-            bbox_inches='tight')
+        os.makedirs(save_path, exist_ok=True)
+        p = fs.pl.plot_stars(
+            fsom, background_values=fsom.get_cluster_data().obs.metaclustering
+        )
+        p.savefig(os.path.join(save_path, "flowsom.png"), dpi=300, bbox_inches="tight")
         return p
 
     def plot_umap_save_readouts_by_fcsfile(
-                        self, fsom, save_path,
-                        markers=np.array([]),
-                        threshold_method = 'otsu'):
+        self, fsom, save_path, markers=np.array([]), threshold_method="custom"
+    ):
         """
         For each FCS file in the FlowSOM object, generate UMAP plots and save summary metrics.
+
+        UMAP is computed once on the full dataset for a shared coordinate space,
+        then the embedding is stored directly on cell_data.  Per-file slices are
+        extracted, processed, and released immediately so that only one file's
+        worth of marker data is held in memory at a time.
 
         Args:
             fsom (flowsom.main.FlowSOM): Trained FlowSOM object.
@@ -369,47 +513,122 @@ class FlowSOMPipeline:
             markers (np.ndarray or list, optional): Markers to overlay on UMAP.
                 Always includes metaclustering.
             threshold_method (str, optional): Method for marker positivity thresholding.
-            threshold_report (bool, optional): If True, save thresholding histograms.
 
         Returns:
             None
         """
+        os.makedirs(save_path, exist_ok=True)
         cell_data = fsom.get_cell_data()
-        fcs_files = cell_data.obs['FCS_File'].unique()
-        subset_fsom = self._process_fsom_for_umap(cell_data)
+        fcs_files = cell_data.obs["FCS_File"].unique()
+        overlay_markers = (
+            list(markers) if markers is not None and len(markers) > 0 else None
+        )
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(self._process_pool_plot_umaps,
-                                        subset_fsom,
-                                        save_path,
-                                        markers,
-                                        f)
-                       for f in fcs_files]
-            for future in concurrent.futures.as_completed(results):
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"Error processing file: {e}")
+        # --- Compute UMAP once on the full dataset (shared coordinate space) ---
+        # Store directly on cell_data so we can drop the large intermediate copy
+        # that _process_fsom_for_umap normally returns.
+        if not (hasattr(cell_data, "obsm") and "X_umap" in cell_data.obsm):
+            ad, reducer, sketch_idx = fit_on_sketch_transform_all_in_memory(
+                cell_data,
+                sketch_n=15_000_000,
+                chunk_size=500_000,
+                seed=42,
+                balanced=True,
+                n_neighbors=15,
+                min_dist=0.05,
+            )
+            cell_data.obsm["X_umap"] = ad.obsm["X_umap"].copy()
+            print(f"UMAP computed: {cell_data.obsm['X_umap'].shape}")
+            del ad, reducer, sketch_idx
+            gc.collect()
 
-        calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
-                                                    save_path,
-                                                    threshold_method,
-                                                    True,
-                                                    self.bad_markers)
+        # --- Pre-select column subset when overlay markers are requested ---
+        col_subset = None
+        if overlay_markers is not None:
+            ref_markers_bool = cell_data.var["cols_used"]
+            clustering_markers = cell_data.var_names[ref_markers_bool].tolist()
+            lower_name_map = {
+                str(n).lower(): str(n) for n in cell_data.var_names.tolist()
+            }
+            selected = list(clustering_markers)
+            missing = []
+            for m in overlay_markers:
+                resolved = lower_name_map.get(str(m).lower())
+                if resolved is None:
+                    missing.append(m)
+                elif resolved not in selected:
+                    selected.append(resolved)
+            if missing:
+                print(f"Warning: overlay markers not found and skipped: {missing}")
+            col_subset = selected
 
+        # --- Compute cutoffs once (shared across files) ---
+        calculated_cutoffs = _calculate_cutoffs_dispatcher(
+            fsom,
+            save_path,
+            threshold_method,
+            True,
+            self.bad_markers,
+            self.config.custom_threshold_dict,
+        )
+
+        # --- Resolve overlay markers for per-file UMAP plots ---
+        resolved_overlay = None
+        if overlay_markers is not None:
+            lower_name_map = {
+                str(n).lower(): str(n) for n in cell_data.var_names.tolist()
+            }
+            resolved_overlay = []
+            for m in overlay_markers:
+                resolved = lower_name_map.get(str(m).lower())
+                if resolved is not None and resolved not in resolved_overlay:
+                    resolved_overlay.append(resolved)
+
+        # --- Iterate per file: extract → plot UMAP → save readouts → release ---
         for fcs_file in fcs_files:
-            clean_filename = fcs_file.replace('.fcs', '').replace('/', '_')
+            clean_filename = fcs_file.replace(".fcs", "").replace("/", "_")
             file_save_path = os.path.join(save_path, f"by_file/{clean_filename}")
 
-            file_mask = subset_fsom.obs['FCS_File'] == fcs_file
-            file_subset = subset_fsom[file_mask].copy()
+            file_mask = cell_data.obs["FCS_File"] == fcs_file
+            if col_subset is not None:
+                file_subset = cell_data[file_mask, col_subset].copy()
+            else:
+                file_subset = cell_data[file_mask].copy()
 
-            self.save_readouts_from_anndata(file_subset,
-                                       file_save_path,
-                                       calculated_cutoffs)
-            print('Cluster metrics saved per fcs file.')
+            os.makedirs(file_save_path, exist_ok=True)
 
-    def plot_umap(self, fsom, save_path: str, markers=None, subsample=False, n_sample=None):
+            try:
+                # UMAP plots per file
+                if resolved_overlay:
+                    _marker_umap_plot(
+                        resolved_overlay,
+                        file_subset,
+                        file_save_path,
+                        subsample=False,
+                    )
+                else:
+                    _metacluster_umap_plot(file_subset, file_save_path)
+
+                # Readout CSVs per file
+                self.save_readouts_from_anndata(
+                    file_subset, file_save_path, calculated_cutoffs
+                )
+            finally:
+                del file_subset
+                gc.collect()
+
+            print(f"UMAP and cluster metrics saved for {clean_filename}.")
+
+    def plot_umap(
+        self,
+        fsom,
+        save_path: str,
+        markers=None,
+        subsample=False,
+        n_sample=None,
+        pkl_post_umap_path: Optional[str] = None,
+        plot_subsample_n: Optional[int] = None,
+    ):
         """
         Create and save a UMAP visualization of FlowSOM clustering results.
 
@@ -422,8 +641,14 @@ class FlowSOMPipeline:
                 ['CD4', 'pSTAT5']. Defaults to None.
             subsample (Boolean, optional): Option to subsample umap to reduce compute
                 time / UMAP complexity. Defaults to False.
-            n_sample (int, optional): Number of cells to sample when subsample=True.
-                Required if subsample=True. Defaults to None.
+            n_sample (int or float, optional): If int, number of cells to sample
+                when subsample=True. If float in (0, 1], proportion of cells to
+                sample. Required if subsample=True. Defaults to None.
+            pkl_post_umap_path (str, optional): Option to save FSOM object following
+                UMAP calculation. Defaults to None.
+            plot_subsample_n (int, optional): Option to subsample the plotting of UMAP
+                if UMAP too large to plot all events. Integer controls if subsampling
+                happens, and subsampling to number of events. Defaults to None.
 
         Example:
             >>> pipeline = FlowSOMPipeline(config)
@@ -431,27 +656,58 @@ class FlowSOMPipeline:
             >>> umap_fig = pipeline.plot_umap(fsom, '/path/to/umap_plot.png')
             >>> umap_fig.show()  # Display the plot
         """
-        if hasattr(fsom, 'obsm') and 'X_umap' in fsom.obsm:
+        os.makedirs(save_path, exist_ok=True)
+        if hasattr(fsom, "obsm") and "X_umap" in fsom.obsm:
             subset_fsom = fsom
         else:
-            subset_fsom = self._process_fsom_for_umap(fsom, subsample, n_sample)
+            subset_fsom = self._process_fsom_for_umap(
+                fsom,
+                subsample,
+                n_sample,
+                overlay_markers=markers,
+            )
+            if pkl_post_umap_path is not None:
+                self.save_flowsom_pkl(fsom, pkl_post_umap_path)
+                print("full fsom with UMAP saved X_umap to pickle")
+
+        if plot_subsample_n is not None:
+            sc.pp.subsample(
+                subset_fsom,
+                n_obs=plot_subsample_n,
+                random_state=self.config.seed,
+            )
 
         if markers is not None and len(markers) > 0:
-            plots = _marker_umap_plot(markers,
-                                    subset_fsom,
-                                    save_path,
-                                    subsample)
+            lower_name_map = {
+                str(name).lower(): str(name) for name in subset_fsom.var_names.tolist()
+            }
+            resolved_markers = []
+            unresolved_markers = []
+            for marker in markers:
+                marker_str = str(marker)
+                resolved = lower_name_map.get(marker_str.lower())
+                if resolved is None:
+                    unresolved_markers.append(marker_str)
+                elif resolved not in resolved_markers:
+                    resolved_markers.append(resolved)
+
+            if unresolved_markers:
+                print(
+                    "Warning: markers not found for UMAP overlay and skipped: "
+                    f"{unresolved_markers}"
+                )
+
+            plots = _marker_umap_plot(
+                resolved_markers, subset_fsom, save_path, subsample
+            )
             return plots
         else:
             umap_plot = _metacluster_umap_plot(subset_fsom, save_path)
             return umap_plot
 
-    def save_readouts(self,
-                        fsom,
-                        save_path,
-                        cluster_level,
-                        threshold_method,
-                        threshold_report = True):
+    def save_readouts(
+        self, fsom, save_path, cluster_level, threshold_method, threshold_report=True
+    ):
         """
         Calculate and save FlowSOM clustering readouts to CSV files.
 
@@ -460,7 +716,7 @@ class FlowSOMPipeline:
             save_path (str): Directory path to save CSV files.
             cluster_level (str): Level for analysis ('metaclusters' or 'clusters').
             threshold_method (str): Method of positive marker thresholding
-                ('otsu', 'li', 'yen', or 'mean').
+                ('custom', 'otsu', 'li', 'yen', or 'mean').
             threshold_report (bool): Generate per-marker histogram
                 report of thresholding method. Defaults to True.
 
@@ -472,77 +728,167 @@ class FlowSOMPipeline:
             fs.tl.get_metacluster_percentages_positive.
 
         """
-        calculated_cutoffs = _calculate_cutoffs_dispatcher(fsom,
-                                                            save_path,
-                                                            threshold_method,
-                                                            threshold_report,
-                                                            self.bad_markers)
+        os.makedirs(save_path, exist_ok=True)
+        calculated_cutoffs = _calculate_cutoffs_dispatcher(
+            fsom,
+            save_path,
+            threshold_method,
+            threshold_report,
+            self.bad_markers,
+            self.config.custom_threshold_dict,
+        )
 
         # Readouts
-        counts = fs.tl.get_counts(fsom,
-                                level=cluster_level)
-        percentages = fs.tl.get_percentages(fsom,
-                                            level=cluster_level)
-        per_pos = fs.tl.get_metacluster_percentages_positive(fsom,
-                                                            cutoffs=calculated_cutoffs)
+        counts = fs.tl.get_counts(fsom, level=cluster_level)
+        percentages = fs.tl.get_percentages(fsom, level=cluster_level)
+        per_pos = fs.tl.get_metacluster_percentages_positive(
+            fsom, cutoffs=calculated_cutoffs
+        )
         # Save to csv
-        counts.to_csv(os.path.join(save_path,
-                                    f'{cluster_level}_counts.csv'))
-        percentages.to_csv(os.path.join(save_path,
-                                    f'{cluster_level}_percentages.csv'))
-        per_pos.to_csv(os.path.join(save_path,
-                                    f'{cluster_level}_percentage_positive.csv'))
+        counts.to_csv(os.path.join(save_path, f"{cluster_level}_counts.csv"))
+        percentages.to_csv(os.path.join(save_path, f"{cluster_level}_percentages.csv"))
+        per_pos.to_csv(
+            os.path.join(save_path, f"{cluster_level}_percentage_positive.csv")
+        )
 
-    def _process_fsom_for_umap(self, fsom,
-                                subsample=False,
-                                n_sample=None):
+    def _process_fsom_for_umap(
+        self, fsom, subsample=False, n_sample=None, overlay_markers=None
+    ):
         """
         Process FlowSOM data for UMAP visualization.
 
         Args:
             fsom (flowsom.main.FlowSOM or anndata.AnnData): FlowSOM object or AnnData.
             subsample (bool, optional): Whether to subsample cells. Defaults to False.
-            n_sample (int, optional): Number of cells to sample if subsample=True.
-
+            n_sample (int or float, optional): If int, number of cells to sample.
+                If float in (0, 1], proportion of cells to sample.
+            overlay_markers (list, optional): Additional markers to include in the returned
+                AnnData beyond the clustering markers (e.g. for colouring the UMAP).
+                These do not influence UMAP computation. Defaults to None.
         Returns:
             anndata.AnnData: Processed data with UMAP coordinates.
 
         Raises:
-            ValueError: If subsample=True but n_sample is None.
+            ValueError: If subsample=True but n_sample is missing or invalid.
         """
+        if isinstance(subsample, Real) and not isinstance(subsample, bool):
+            if n_sample is not None:
+                raise ValueError(
+                    "Provide either subsample as a numeric value or n_sample, not both"
+                )
+            n_sample = subsample
+            subsample = True
+
         if subsample and n_sample is None:
             raise ValueError("n_sample must be provided when subsample=True")
 
-        if hasattr(fsom, 'get_cell_data'): #Is FSOM
-            ref_markers_bool = fsom.get_cell_data().var["cols_used"]
-            subset_fsom = fsom.get_cell_data()[:,
-                                                fsom.get_cell_data().var_names[ref_markers_bool]]
-        else: # Is AnnData
+        if hasattr(fsom, "get_cell_data"):  # Is FSOM
+            cell_data = fsom.get_cell_data()
+            ref_markers_bool = cell_data.var["cols_used"]
+            clustering_markers = cell_data.var_names[ref_markers_bool].tolist()
+            var_names_source = cell_data.var_names.tolist()
+            data_source = cell_data
+        else:  # Is AnnData
             ref_markers_bool = fsom.var["cols_used"]
-            subset_fsom = fsom[:,fsom.var_names[ref_markers_bool]]
+            clustering_markers = fsom.var_names[ref_markers_bool].tolist()
+            var_names_source = fsom.var_names.tolist()
+            data_source = fsom
+
+        selected_markers = list(clustering_markers)
+        if overlay_markers is not None:
+            overlay_markers = [str(marker) for marker in overlay_markers]
+            lower_name_map = {str(name).lower(): str(name) for name in var_names_source}
+            resolved_overlay = []
+            missing_overlay = []
+            for marker in overlay_markers:
+                resolved = lower_name_map.get(marker.lower())
+                if resolved is None:
+                    missing_overlay.append(marker)
+                elif resolved not in resolved_overlay:
+                    resolved_overlay.append(resolved)
+
+            if missing_overlay:
+                print(
+                    f"Warning: overlay markers not found and skipped: {missing_overlay}"
+                )
+            for marker in resolved_overlay:
+                if marker not in selected_markers:
+                    selected_markers.append(marker)
+
+        subset_fsom = data_source[:, selected_markers].copy()
 
         if subsample and n_sample:
-            sc.pp.subsample(subset_fsom, n_obs=n_sample)
+            if isinstance(n_sample, (int, np.integer)):
+                if n_sample <= 0:
+                    raise ValueError("n_sample must be a positive integer")
+                if n_sample < subset_fsom.n_obs:
+                    sc.pp.subsample(
+                        subset_fsom, n_obs=int(n_sample), random_state=self.config.seed
+                    )
+            elif isinstance(n_sample, Real):
+                if n_sample <= 0:
+                    raise ValueError("n_sample proportion must be > 0")
+                if n_sample <= 1:
+                    sc.pp.subsample(
+                        subset_fsom,
+                        fraction=float(n_sample),
+                        random_state=self.config.seed,
+                    )
+                elif float(n_sample).is_integer():
+                    n_obs = int(n_sample)
+                    if n_obs < subset_fsom.n_obs:
+                        sc.pp.subsample(
+                            subset_fsom,
+                            n_obs=n_obs,
+                            random_state=self.config.seed,
+                        )
+                else:
+                    raise ValueError(
+                        "n_sample must be an integer count or float proportion in (0, 1]"
+                    )
+            else:
+                raise ValueError(
+                    "n_sample must be an integer count or float proportion in (0, 1]"
+                )
 
-        sc.pp.neighbors(subset_fsom,
-                        random_state=self.config.seed)
-        sc.tl.umap(subset_fsom,
-                random_state=self.config.seed)
+        # Check if UMAP already exists in source data; if so, use it instead of recomputing
+        if hasattr(data_source, "obsm") and "X_umap" in data_source.obsm:
+            print("X_umap already present in data; skipping UMAP computation.")
+            # Get integer indices of subset rows within source
+            source_indices = data_source.obs_names.get_indexer(subset_fsom.obs_names)
+            subset_fsom.obsm["X_umap"] = data_source.obsm["X_umap"][
+                source_indices
+            ].copy()
+        else:
+            # sc.pp.neighbors(clustering_view, random_state=self.config.seed)
+            # sc.tl.umap(clustering_view, random_state=self.config.seed)
+            ad, reducer, sketch_idx = fit_on_sketch_transform_all_in_memory(
+                fsom,
+                sketch_n=15_000_000,
+                chunk_size=500_000,
+                seed=42,
+                balanced=True,
+                n_neighbors=15,
+                min_dist=0.05,
+            )
+            print(ad.obsm["X_umap"].shape)  # (all_cells, 2)
+            subset_fsom.obsm["X_umap"] = ad[subset_fsom.obs_names].obsm["X_umap"].copy()
 
         return subset_fsom
 
-    def _process_pool_plot_umaps(self, subset_fsom, save_path, markers, fcs_file) -> None:
-        """ Process pool'd function for umap generation per fcs file """
-        clean_filename = fcs_file.replace('.fcs', '').replace('/', '_')
+    def _process_pool_plot_umaps(
+        self, subset_fsom, save_path, markers, fcs_file
+    ) -> None:
+        """Process pool'd function for umap generation per fcs file"""
+        clean_filename = fcs_file.replace(".fcs", "").replace("/", "_")
         file_dir = os.path.join(save_path, f"by_file/{clean_filename}")
         os.makedirs(file_dir, exist_ok=True)
 
         try:
-            file_mask = subset_fsom.obs['FCS_File'] == fcs_file
+            file_mask = subset_fsom.obs["FCS_File"] == fcs_file
             file_cell_data = subset_fsom[file_mask].copy()
 
-            self.plot_umap(file_cell_data, file_dir,
-                        markers=markers)
+            self.plot_umap(file_cell_data, file_dir, markers=markers)
             print(f"Completed {clean_filename}")
 
         except Exception as e:
@@ -550,8 +896,8 @@ class FlowSOMPipeline:
 
     def save_readouts_from_anndata(self, file_subset, save_path, calculated_cutoffs):
         """
-        Save readouts directly from AnnData using consistent clustering. 
-        Mirrors FlowSOMs save_readouts function, but actually works. 
+        Save readouts directly from AnnData using consistent clustering.
+        Mirrors FlowSOMs save_readouts function, but actually works.
 
         Args:
             file_subset: AnnData subset for one file with consistent clustering.
@@ -559,15 +905,17 @@ class FlowSOMPipeline:
             calculated_cutoffs: Dict of marker cutoff values for positivity.
         """
 
-        metacluster_counts = file_subset.obs['metaclustering'].value_counts().sort_index()
+        metacluster_counts = (
+            file_subset.obs["metaclustering"].value_counts().sort_index()
+        )
         total_cells = len(file_subset)
         metacluster_percentages = metacluster_counts / total_cells
 
-        unique_metaclusters = sorted(file_subset.obs['metaclustering'].unique())
+        unique_metaclusters = sorted(file_subset.obs["metaclustering"].unique())
         perc_pos_data = []
 
         for mc in unique_metaclusters:
-            mc_mask = file_subset.obs['metaclustering'] == mc
+            mc_mask = file_subset.obs["metaclustering"] == mc
             mc_cells = file_subset[mc_mask]
 
             mc_perc_pos = {}
@@ -576,35 +924,111 @@ class FlowSOMPipeline:
                     marker_idx = list(file_subset.var_names).index(marker)
                     marker_data = mc_cells.X[:, marker_idx]
                     positive_count = (marker_data > cutoff).sum()
-                    percentage_positive = positive_count / len(mc_cells) if len(mc_cells) > 0 else 0
+                    percentage_positive = (
+                        positive_count / len(mc_cells) if len(mc_cells) > 0 else 0
+                    )
                     mc_perc_pos[marker] = percentage_positive
             perc_pos_data.append(mc_perc_pos)
 
-        metacluster_counts.to_csv(os.path.join(save_path, 'metaclusters_counts.csv'))
-        metacluster_percentages.to_csv(os.path.join(save_path,\
-                                                    'metaclusters_percentages.csv'))
+        metacluster_counts.to_csv(os.path.join(save_path, "metaclusters_counts.csv"))
+        metacluster_percentages.to_csv(
+            os.path.join(save_path, "metaclusters_percentages.csv")
+        )
 
-        perc_pos_df = pd.DataFrame(perc_pos_data, index=[f'MC{mc}' for
-                                                        mc in unique_metaclusters])
-        perc_pos_df.to_csv(os.path.join(save_path,
-                                        'metaclusters_percentage_positive.csv'))
+        perc_pos_df = pd.DataFrame(
+            perc_pos_data, index=[f"MC{mc}" for mc in unique_metaclusters]
+        )
+        perc_pos_df.to_csv(
+            os.path.join(save_path, "metaclusters_percentage_positive.csv")
+        )
 
-def _calculate_cutoffs_dispatcher(fsom,
-                                    save_path,
-                                    threshold_method,
-                                    threshold_report,
-                                    bad_markers):
+
+def _calculate_cutoffs_dispatcher(
+    fsom,
+    save_path,
+    threshold_method,
+    threshold_report,
+    bad_markers,
+    custom_threshold_dict,
+):
     """Dispatch to different thresholding methods."""
     method_map = {
-        'otsu': _calculate_multi_otsu_cutoffs,
-        'li': _calculate_li_cutoffs,
-        'yen': _calculate_yen_cutoffs,
-        'mean': _calculate_mean_cutoffs
+        "custom": _custom_threshold_cutoffs,
+        "otsu": _calculate_multi_otsu_cutoffs,
+        "li": _calculate_li_cutoffs,
+        "yen": _calculate_yen_cutoffs,
+        "mean": _calculate_mean_cutoffs,
     }
     if threshold_method not in method_map:
-        raise ValueError(f"Unknown method: {threshold_method}. Available: {list(method_map.keys())}")
+        raise ValueError(
+            f"Unknown method: {threshold_method}. Available: {list(method_map.keys())}"
+        )
 
-    return method_map[threshold_method](fsom, bad_markers, threshold_report, save_path)
+    return method_map[threshold_method](
+        fsom, bad_markers, threshold_report, save_path, custom_threshold_dict
+    )
+
+
+def _custom_threshold_cutoffs(
+    fsom, bad_markers: list, threshold_report, save_path, custom_threshold_dict=None
+):
+    """
+    Map custom cutoffs.
+
+    Args:
+        fsom (flowsom.main.FlowSOM): Fitted FlowSOM object.
+        bad_markers (list): List of markers not to have thresholding applied
+            i.e. bad_markers = ['Time', 'SSC-A']
+
+    Returns:
+        dict: Marker names as keys, Custom cutoff values as values.
+    """
+    cell_data = fsom.get_cell_data()
+    if custom_threshold_dict is None:
+        raise KeyError
+
+    lower_custom_thresholds = {
+        str(marker).lower(): value for marker, value in custom_threshold_dict.items()
+    }
+    normalized_custom_thresholds = {
+        re.sub(r"[^a-z0-9]", "", str(marker).lower()): value
+        for marker, value in custom_threshold_dict.items()
+    }
+
+    cutoffs = {}
+    missing_markers = []
+    for marker in cell_data.var_names:
+        if marker in bad_markers:
+            continue
+
+        threshold = custom_threshold_dict.get(marker)
+        if threshold is None:
+            threshold = lower_custom_thresholds.get(str(marker).lower())
+        if threshold is None:
+            normalized_marker = re.sub(r"[^a-z0-9]", "", str(marker).lower())
+            threshold = normalized_custom_thresholds.get(normalized_marker)
+
+        if threshold is None:
+            missing_markers.append(str(marker))
+            continue
+
+        cutoffs[str(marker)] = float(threshold)
+
+    if missing_markers:
+        raise ValueError(
+            "Missing custom thresholds for required markers: "
+            f"{missing_markers}. Add them to custom_threshold_dict or move those "
+            "markers to bad_markers."
+        )
+
+    if not cutoffs:
+        raise ValueError("No valid custom thresholds found for available markers.")
+
+    if threshold_report:
+        _build_histo_report(fsom, cutoffs, "custom", save_path)
+
+    return cutoffs
+
 
 def _calculate_multi_otsu_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
     """
@@ -625,9 +1049,10 @@ def _calculate_multi_otsu_cutoffs(fsom, bad_markers: list, threshold_report, sav
         if marker not in bad_markers
     }
     if threshold_report:
-        _build_histo_report(fsom, cutoffs, 'Multi - Otsu', save_path)
+        _build_histo_report(fsom, cutoffs, "Multi - Otsu", save_path)
 
     return cutoffs
+
 
 def _calculate_li_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
     """Calculate cutoffs using Li's minimum cross entropy method."""
@@ -638,9 +1063,10 @@ def _calculate_li_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
         if marker not in bad_markers
     }
     if threshold_report:
-        _build_histo_report(fsom, cutoffs, 'Li', save_path)
+        _build_histo_report(fsom, cutoffs, "Li", save_path)
 
     return cutoffs
+
 
 def _calculate_yen_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
     """Calculate cutoffs using Yen's maximum correlation criterion."""
@@ -651,12 +1077,13 @@ def _calculate_yen_cutoffs(fsom, bad_markers: list, threshold_report, save_path)
         if marker not in bad_markers
     }
     if threshold_report:
-        _build_histo_report(fsom, cutoffs, 'Yen', save_path)
+        _build_histo_report(fsom, cutoffs, "Yen", save_path)
 
     return cutoffs
 
+
 def _calculate_mean_cutoffs(fsom, bad_markers: list, threshold_report, save_path):
-    """ Calculate cutoffs using mean-based thresholding method."""
+    """Calculate cutoffs using mean-based thresholding method."""
     cell_data = fsom.get_cell_data()
     cutoffs = {
         marker: threshold_mean(cell_data.X[:, i])
@@ -664,9 +1091,10 @@ def _calculate_mean_cutoffs(fsom, bad_markers: list, threshold_report, save_path
         if marker not in bad_markers
     }
     if threshold_report:
-        _build_histo_report(fsom, cutoffs, 'Mean', save_path)
+        _build_histo_report(fsom, cutoffs, "Mean", save_path)
 
     return cutoffs
+
 
 def _build_histo_report(fsom, cutoffs, method_name, save_path):
     """
@@ -682,64 +1110,121 @@ def _build_histo_report(fsom, cutoffs, method_name, save_path):
     """
     cell_data = fsom.get_cell_data()
 
+    # Remove invalid thresholds that would break plotting
+    valid_cutoffs = {}
+    invalid_markers = []
+    for marker, threshold in cutoffs.items():
+        try:
+            if threshold is None or not np.isfinite(float(threshold)):
+                invalid_markers.append(marker)
+                continue
+            valid_cutoffs[marker] = float(threshold)
+        except Exception:
+            invalid_markers.append(marker)
+
+    if invalid_markers:
+        print(f"Warning: invalid thresholds skipped from report: {invalid_markers}")
+
+    if not valid_cutoffs:
+        print("Warning: no valid thresholds available for histogram report.")
+        return
+
     # Report creation
-    n_markers = len(cutoffs)
+    n_markers = len(valid_cutoffs)
     n_cols = 4
     n_rows = (n_markers + n_cols - 1) // n_cols
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
-    fig.suptitle(f'Marker Expression Distributions with {method_name} Thresholds',
-                 fontsize=16, y=0.98)
+    fig.suptitle(
+        f"Marker Expression Distributions with {method_name} Thresholds",
+        fontsize=16,
+        y=0.98,
+    )
     axes = axes.flatten()
 
-    #Histogram Creation
-    for idx, (marker, threshold) in enumerate(cutoffs.items()):
+    # Histogram Creation
+    skipped_hist_markers = []
+    for idx, (marker, threshold) in enumerate(valid_cutoffs.items()):
         ax = axes[idx]
 
         marker_idx = list(cell_data.var_names).index(marker)
         marker_data = cell_data.X[:, marker_idx]
-        ax.hist(marker_data,
-                bins=100,
-                density=True,
-                alpha=0.7,
-                color='lightblue',
-                edgecolor='black',
-                linewidth=0.5)
+        if hasattr(marker_data, "toarray"):
+            marker_data = marker_data.toarray()
+        marker_data = np.asarray(marker_data, dtype=float).ravel()
+        finite_marker_data = marker_data[np.isfinite(marker_data)]
 
-        ax.axvline(threshold,
-                color='black',
-                linestyle='-',
-                linewidth=2,
-                )
+        if finite_marker_data.size == 0:
+            skipped_hist_markers.append(marker)
+            ax.set_title(marker, fontsize=14, fontweight="bold")
+            ax.text(
+                0.5,
+                0.5,
+                "All values non-finite\n(histogram skipped)",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            continue
 
-        ax.set_title(marker, fontsize=14, fontweight='bold')
-        ax.set_xlabel('Expression (arcsinh transformed)')
-        ax.set_ylabel('Density')
+        ax.hist(
+            finite_marker_data,
+            bins=100,
+            density=True,
+            alpha=0.7,
+            color="lightblue",
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+        ax.axvline(
+            threshold,
+            color="black",
+            linestyle="-",
+            linewidth=2,
+        )
+
+        ax.set_title(marker, fontsize=14, fontweight="bold")
+        ax.set_xlabel("Expression (arcsinh transformed)")
+        ax.set_ylabel("Density")
         ax.grid(True, alpha=0.3)
 
         # Stats as text
-        stats_text = (f'Threshold: {threshold:.2f}\n'
-                    f'Mean: {np.mean(marker_data):.2f}\n'
-                    f'Median: {np.median(marker_data):.2f}\n'
-                    f'Std: {np.std(marker_data):.2f}')
-        ax.text(0.02,
-                0.98,
-                stats_text,
-                transform=ax.transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round',
-                facecolor='white',
-                alpha=0.8))
+        stats_text = (
+            f"Threshold: {threshold:.2f}\n"
+            f"Mean: {np.mean(finite_marker_data):.2f}\n"
+            f"Median: {np.median(finite_marker_data):.2f}\n"
+            f"Std: {np.std(finite_marker_data):.2f}"
+        )
+        ax.text(
+            0.02,
+            0.98,
+            stats_text,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )
 
-    for idx in range(len(cutoffs), len(axes)):
-        axes[idx].axis('off')
+    for idx in range(len(valid_cutoffs), len(axes)):
+        axes[idx].axis("off")
+
+    if skipped_hist_markers:
+        print(
+            "Warning: markers with all non-finite values skipped in histogram report: "
+            f"{skipped_hist_markers}"
+        )
+
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    plot_path = os.path.join(save_path, f'threshold_report_{method_name}.pdf')
-    plt.savefig(plot_path, dpi=300, format="pdf", bbox_inches='tight')
+    plot_path = os.path.join(save_path, f"threshold_report_{method_name}.pdf")
+    plt.savefig(plot_path, dpi=300, format="pdf", bbox_inches="tight")
     plt.close()
 
-    print(f'Report saved to {plot_path}')
+    print(f"Report saved to {plot_path}")
+
 
 def _metacluster_umap_plot(subset_fsom, save_path):
     """
@@ -753,24 +1238,30 @@ def _metacluster_umap_plot(subset_fsom, save_path):
         matplotlib.axes.Axes: UMAP plot axes object.
     """
     subset_fsom.obs["metaclustering"] = subset_fsom.obs["metaclustering"].astype(str)
-    umap_plot = sc.pl.umap(subset_fsom,
-                        color="metaclustering",
-                        legend_loc = 'on data',
-                        legend_fontsize=12,
-                        show=False)
-    umap_plot.figure.savefig(os.path.join(save_path, "umap_metacluster_plot.png"),
-                                dpi=300,
-                                bbox_inches='tight')
+    umap_plot = sc.pl.umap(
+        subset_fsom,
+        color="metaclustering",
+        legend_loc="on data",
+        legend_fontsize=12,
+        size=1,
+        show=False,
+    )
+    umap_plot.figure.savefig(
+        os.path.join(save_path, "umap_metacluster_plot.png"),
+        dpi=100,
+        bbox_inches="tight",
+    )
     plt.close()
     return umap_plot
 
-def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
+
+def _marker_umap_plot(markers, fsom, save_path, subsample):
     """
     Create individual UMAP plots for each marker, colored by expression.
 
     Args:
         markers (str or list): Marker name(s) to plot.
-            subset_fsom (anndata.AnnData): Cell data with UMAP coordinates.
+        fsom (anndata.AnnData): Cell data with UMAP coordinates.
         save_path (str): File path for saving plots.
         subsample (bool): If subsample true, metacluster also generated,
                 as random sampling can cause slight differences in generated UMAP
@@ -789,22 +1280,35 @@ def _marker_umap_plot(markers, subset_fsom, save_path, subsample):
     else:
         raise TypeError("markers must be a string, np.array, or list of strings")
 
-    available_markers = subset_fsom.var_names.tolist()
+    available_markers = fsom.var_names.tolist()
     invalid_markers = [m for m in markers if m not in available_markers]
     if invalid_markers:
-        raise ValueError(f'Markers {invalid_markers} not found in data. Available markers: {available_markers[:10]}...')
+        raise ValueError(
+            f"Markers {invalid_markers} not found in data. Available markers: {available_markers[:10]}..."
+        )
     else:
+        # Create an absolute intensity layer by reversing the arcsinh transform (cofactor 200)
+        if "absolute_intensity" not in fsom.layers:
+            fsom.layers["absolute_intensity"] = np.sinh(fsom.X) * 200.0
+
         plots = []
         for m in markers:
-            umap_plot = sc.pl.umap(subset_fsom, color=m, legend_loc = 'on data',
-                                    legend_fontsize=12, cmap='rainbow', show=False)
-            umap_plot.figure.savefig(os.path.join(save_path, f"{m}.png"),
-                                        dpi=300,
-                                        bbox_inches='tight')
+            umap_plot = sc.pl.umap(
+                fsom,
+                color=m,
+                legend_loc="on data",
+                legend_fontsize=12,
+                cmap="viridis",
+                size=1,
+                show=False,
+            )
+            umap_plot.figure.savefig(
+                os.path.join(save_path, f"{m}.png"), dpi=100, bbox_inches="tight"
+            )
             plt.close()
             plots.append(umap_plot)
 
-        umap_meta_plot = _metacluster_umap_plot(subset_fsom, save_path)
+        umap_meta_plot = _metacluster_umap_plot(fsom, save_path)
         plots.append(umap_meta_plot)
 
         return plots
