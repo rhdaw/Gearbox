@@ -1,4 +1,106 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+*.log
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Linter caches
+.ruff_cache/
+.mypy_cache/
+.pytype/
+
+# R
+.RData
+.Rhistory
+.Rproj.user/
+*.Rproj
+
+# Data files
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.json
+*.fcs
+*.h5
+*.h5ad
+*.zarr
+
+# Output directories
+fmo_histograms NEW THRESHOLDS/
+fmo_histograms OLD THRESHOLDS/
+tmp_umap_smoke/
+UNITO/
 CytoNormPy/
+cycombine/
+fmo_histograms.zip
+src/3_unito/gate_comparison_plots/
+
+# Project specific
+src/4_fcs_to_omiq
+src/1_flowAI/.Rhistory
+bad_marker_entries.csv
 data_batch_correction.R_error.log
 data_batch_correction.R_output.log
 data_correction_performance.R
@@ -7,13 +109,11 @@ data_correction_performance.R_output.log
 data_prep.R
 data_prep.R_error.log
 data_prep.R_output.log
-bad_marker_entries.csv
-
-cycombine/
-.RData
-UNITO/
-src/4_fcs_to_omiq
-
 gating_strategy.csv
 gearbox_workspace.code-workspace
-src/1_flowAI/.Rhistory
+uv.lock
+hyperparameter_tuning.csv
+before_gate_metrics_report.csv
+gate_metrics_report.csv
+fmo_thresholds.csv
+fmo_thresholds.json
